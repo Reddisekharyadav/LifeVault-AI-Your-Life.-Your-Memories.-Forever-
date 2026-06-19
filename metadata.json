@@ -1,0 +1,8 @@
+{
+  "name": "Remix: LifeVault AI",
+  "description": "A private, offline AI journal for preserving life memories through voice, text, and media with secure, smart insights.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
