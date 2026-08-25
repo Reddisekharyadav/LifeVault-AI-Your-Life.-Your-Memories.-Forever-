@@ -2,7 +2,9 @@ package com.example.data.model
 
 import androidx.room.Entity
 import androidx.room.PrimaryKey
+import com.squareup.moshi.JsonClass
 
+@JsonClass(generateAdapter = true)
 @Entity(tableName = "relationships")
 data class LocalRelationship(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,

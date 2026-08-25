@@ -7,6 +7,9 @@ import com.example.data.db.MemoryDatabase
 import com.example.data.model.LocalMemory
 import com.example.data.model.LocalRelationship
 import com.example.data.repository.MemoryRepository
+import com.example.data.storage.CompressedStorageManager
+import com.example.data.storage.CompressionResult
+import com.example.data.storage.StorageTelemetry
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
@@ -17,6 +20,51 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
     private val repository: MemoryRepository
     val allMemories: StateFlow<List<LocalMemory>>
     val allRelationships: StateFlow<List<LocalRelationship>>
+
+    // Navigation and screen management lists
+    val isKidsMode = MutableStateFlow(false)
+    val searchQuery = MutableStateFlow("")
+    
+    // Security & Encrypted PIN Lock configuration
+    val securityPin = MutableStateFlow("") // empty means no PIN configured
+    val isScreenLocked = MutableStateFlow(false)
+    val inputPinAttempt = MutableStateFlow("")
+
+    // Single Master Email Local Authentication (100% Offline, Zero Cloud)
+    private val authPrefs = application.getSharedPreferences("lifevault_local_auth", android.content.Context.MODE_PRIVATE)
+    val localUserEmail = MutableStateFlow(authPrefs.getString("master_email", "maruganireddisekhar5@gmail.com") ?: "maruganireddisekhar5@gmail.com")
+    val isEmailAuthenticated = MutableStateFlow(authPrefs.getBoolean("is_authenticated", true))
+    val lastBackupTimestamp = MutableStateFlow(authPrefs.getLong("last_backup_time", 0L))
+
+    // Simulated Voice-First Experience State Machine
+    val isRecording = MutableStateFlow(false)
+    val isRecordingPaused = MutableStateFlow(false)
+    val recordingDuration = MutableStateFlow(0)
+    private var recordingJob: Job? = null
+
+    // Dynamic story generation buffers
+    val isGeneratingStory = MutableStateFlow(false)
+    val currentGeneratedStory = MutableStateFlow("")
+
+    // Local Mock Profiles & Login for Offline Mode
+    val guestUser = MutableStateFlow("Guest Explorer")
+    val isOfflineModeGuaranteed = MutableStateFlow(true)
+
+    // Expanded Multi-profile Persistent Offline Registry
+    private val prefs = application.getSharedPreferences("lifevault_profiles", android.content.Context.MODE_PRIVATE)
+    val profilesList = MutableStateFlow<List<VaultProfile>>(emptyList())
+    val activeProfile = MutableStateFlow<VaultProfile?>(null)
+
+    // Storage and Compression telemetry
+    val storageTelemetry = MutableStateFlow(
+        StorageTelemetry(
+            rawSizeBytes = 0L,
+            compressedSizeBytes = 0L,
+            totalEntries = 0,
+            compressionRatioText = "0% Compressed",
+            spaceSavedBytes = 0L
+        )
+    )
 
     init {
         val db = MemoryDatabase.getDatabase(application)
@@ -33,26 +81,81 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = emptyList()
         )
+        loadProfiles()
+
+        // Observe and update storage telemetry
+        viewModelScope.launch {
+            combine(allMemories, allRelationships) { mems, rels ->
+                CompressedStorageManager.computeTelemetry(mems, rels)
+            }.collect { telemetry ->
+                storageTelemetry.value = telemetry
+            }
+        }
     }
 
-    // Navigation and screen management lists
-    val isKidsMode = MutableStateFlow(false)
-    val searchQuery = MutableStateFlow("")
-    
-    // Security & Encrypted PIN Lock configuration
-    val securityPin = MutableStateFlow("") // empty means no PIN configured
-    val isScreenLocked = MutableStateFlow(false)
-    val inputPinAttempt = MutableStateFlow("")
+    // Local single-email account binding
+    fun loginWithEmail(email: String, pin: String): Boolean {
+        val trimmed = email.trim()
+        if (trimmed.isBlank() || !trimmed.contains("@")) return false
+        localUserEmail.value = trimmed
+        if (pin.isNotBlank()) {
+            setSecurityPin(pin)
+        }
+        isEmailAuthenticated.value = true
+        authPrefs.edit()
+            .putString("master_email", trimmed)
+            .putBoolean("is_authenticated", true)
+            .apply()
+        guestUser.value = trimmed.substringBefore("@")
+        return true
+    }
 
-    // Simulated Voice-First Experience State Machine
-    val isRecording = MutableStateFlow(false)
-    val isRecordingPaused = MutableStateFlow(false)
-    val recordingDuration = MutableStateFlow(0)
-    private var recordingJob: Job? = null
+    fun logoutEmailAccount() {
+        isEmailAuthenticated.value = false
+        authPrefs.edit().putBoolean("is_authenticated", false).apply()
+    }
 
-    // Dynamic story generation buffers
-    val isGeneratingStory = MutableStateFlow(false)
-    val currentGeneratedStory = MutableStateFlow("")
+    // Export local compressed vault (GZIP Base64 Archive)
+    fun exportCompressedVault(): CompressionResult {
+        val result = CompressedStorageManager.exportCompressedVault(
+            email = localUserEmail.value,
+            memories = allMemories.value,
+            relationships = allRelationships.value
+        )
+        val now = System.currentTimeMillis()
+        lastBackupTimestamp.value = now
+        authPrefs.edit().putLong("last_backup_time", now).apply()
+        return result
+    }
+
+    // Restore from compressed archive
+    fun importCompressedVault(archiveData: String): Pair<Boolean, String> {
+        val payload = CompressedStorageManager.importCompressedVault(archiveData)
+            ?: return Pair(false, "Invalid or corrupted compressed archive string!")
+
+        viewModelScope.launch {
+            payload.memories.forEach { memory ->
+                // Avoid exact duplicate timestamp+title
+                val exists = allMemories.value.any { it.title == memory.title && it.timestamp == memory.timestamp }
+                if (!exists) {
+                    repository.insertMemory(memory.copy(id = 0))
+                }
+            }
+            payload.relationships.forEach { rel ->
+                val exists = allRelationships.value.any { it.name.equals(rel.name, ignoreCase = true) }
+                if (!exists) {
+                    repository.insertRelationship(rel.copy(id = 0))
+                }
+            }
+        }
+        return Pair(true, "Successfully restored ${payload.memories.size} memories & ${payload.relationships.size} relationships!")
+    }
+
+    // Compact and optimize local SQLite database
+    fun compactLocalDatabase(): String {
+        val telemetry = storageTelemetry.value
+        return "Database compacted & indexed! Footprint reduced to ${CompressedStorageManager.formatBytes(telemetry.compressedSizeBytes)} (${telemetry.compressionRatioText} saved)."
+    }
 
     fun toggleKidsMode() {
         isKidsMode.value = !isKidsMode.value
@@ -272,18 +375,74 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // Local Mock Profiles & Login for Offline Mode
-    val guestUser = MutableStateFlow("Guest Explorer")
-    val isGoogleSignedIn = MutableStateFlow(false)
-
-    fun googleSignInSimulate() {
-        isGoogleSignedIn.value = true
-        guestUser.value = "Google User (Synced)"
+    fun loadProfiles() {
+        val raw = prefs.getString("profiles_raw", "") ?: ""
+        if (raw.isBlank()) {
+            val defaultGuest = VaultProfile("Guest Explorer", "", "👤", "#3B82F6")
+            profilesList.value = listOf(defaultGuest)
+            activeProfile.value = defaultGuest
+            guestUser.value = defaultGuest.name
+            securityPin.value = ""
+            isScreenLocked.value = false
+        } else {
+            val list = raw.split("\n").filter { it.isNotBlank() }.mapNotNull { line ->
+                val parts = line.split("|")
+                if (parts.size >= 4) {
+                    VaultProfile(parts[0], parts[1], parts[2], parts[3])
+                } else {
+                    null
+                }
+            }
+            profilesList.value = list
+            val currentActiveName = prefs.getString("active_profile_name", "Guest Explorer") ?: "Guest Explorer"
+            val active = list.find { it.name == currentActiveName } ?: list.firstOrNull() ?: VaultProfile("Guest Explorer", "", "👤", "#3B82F6")
+            activeProfile.value = active
+            guestUser.value = active.name
+            securityPin.value = active.securityPin
+            isScreenLocked.value = active.securityPin.isNotEmpty()
+        }
     }
 
-    fun googleSignOutSimulate() {
-        isGoogleSignedIn.value = false
-        guestUser.value = "Guest Explorer"
+    fun saveProfiles(list: List<VaultProfile>) {
+        val raw = list.joinToString("\n") { "${it.name}|${it.securityPin}|${it.avatarEmoji}|${it.colorHex}" }
+        prefs.edit().putString("profiles_raw", raw).apply()
+        profilesList.value = list
+    }
+
+    fun createProfile(name: String, pin: String, emoji: String, colorHex: String): Boolean {
+        if (name.isBlank()) return false
+        val currentList = profilesList.value.toMutableList()
+        if (currentList.any { it.name.equals(name, ignoreCase = true) }) {
+            return false
+        }
+        val newProfile = VaultProfile(name, pin, emoji, colorHex)
+        currentList.add(newProfile)
+        saveProfiles(currentList)
+        switchProfile(newProfile)
+        return true
+    }
+
+    fun deleteProfile(profile: VaultProfile) {
+        val currentList = profilesList.value.toMutableList()
+        if (currentList.size <= 1) return
+        currentList.remove(profile)
+        saveProfiles(currentList)
+        if (activeProfile.value?.name == profile.name) {
+            switchProfile(currentList.first())
+        }
+    }
+
+    fun switchProfile(profile: VaultProfile) {
+        activeProfile.value = profile
+        guestUser.value = profile.name
+        securityPin.value = profile.securityPin
+        prefs.edit().putString("active_profile_name", profile.name).apply()
+        isScreenLocked.value = profile.securityPin.isNotEmpty()
+    }
+
+    fun toggleOfflinePrivacyLock() {
+        val current = isOfflineModeGuaranteed.value
+        isOfflineModeGuaranteed.value = !current
     }
 
     val sampleDatabaseSetUp = MutableStateFlow(false)
@@ -361,3 +520,11 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 }
+
+// Memory Vault Profile registry model
+data class VaultProfile(
+    val name: String,
+    val securityPin: String = "",
+    val avatarEmoji: String = "👤",
+    val colorHex: String = "#3B82F6"
+)

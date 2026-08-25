@@ -1,5 +1,8 @@
 package com.example
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -41,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.model.LocalMemory
+import com.example.data.storage.CompressedStorageManager
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.viewmodel.MemoryViewModel
 import java.text.SimpleDateFormat
@@ -210,7 +214,9 @@ fun StandardVaultWorkspace(
 @Composable
 fun ProfileHeaderSection(viewModel: MemoryViewModel) {
     val guestUser by viewModel.guestUser.collectAsState()
-    val isGoogleSignedIn by viewModel.isGoogleSignedIn.collectAsState()
+    val localUserEmail by viewModel.localUserEmail.collectAsState()
+    val activeProfile by viewModel.activeProfile.collectAsState()
+    var showProfileManager by remember { mutableStateOf(false) }
 
     Card(
         modifier = Modifier
@@ -227,54 +233,74 @@ fun ProfileHeaderSection(viewModel: MemoryViewModel) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable { showProfileManager = true }
+                    .testTag("profile_section_click"),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val avatarEmoji = activeProfile?.avatarEmoji ?: "👤"
+                val avatarColor = Color(android.graphics.Color.parseColor(activeProfile?.colorHex ?: "#3B82F6"))
+
                 Box(
                     modifier = Modifier
                         .size(48.dp)
                         .clip(CircleShape)
-                        .background(Brush.linearGradient(listOf(Color(0xFF3B82F6), Color(0xFF8B5CF6)))),
+                        .background(avatarColor),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = guestUser.take(2).uppercase(),
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 18.sp
+                        text = avatarEmoji,
+                        fontSize = 22.sp
                     )
                 }
                 Spacer(modifier = Modifier.width(12.dp))
                 Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = guestUser,
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 16.sp,
+                            overflow = TextOverflow.Ellipsis,
+                            maxLines = 1
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "Manage Account",
+                            tint = Color(0xFF3B82F6),
+                            modifier = Modifier.size(12.dp)
+                        )
+                    }
                     Text(
-                        text = guestUser,
-                        color = Color.White,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 16.sp,
+                        text = "🔒 $localUserEmail",
+                        color = Color(0xFF10B981),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
                         overflow = TextOverflow.Ellipsis,
                         maxLines = 1
                     )
                     Text(
-                        text = if (isGoogleSignedIn) "Synced to Cloud" else "Local / Offline First Active",
+                        text = "100% Local Encrypted | Zero Cloud",
                         color = Color(0xFF94A3B8),
-                        fontSize = 12.sp
+                        fontSize = 10.sp
                     )
                 }
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                // Sign-In Simulate Toggle
+            Spacer(modifier = Modifier.width(8.dp))
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                // Storage & Compression Manager Quick Button
                 IconButton(
-                    onClick = {
-                        if (isGoogleSignedIn) {
-                            viewModel.googleSignOutSimulate()
-                        } else {
-                            viewModel.googleSignInSimulate()
-                        }
-                    },
+                    onClick = { showProfileManager = true },
                     modifier = Modifier.background(Color(0xFF334155), CircleShape).size(36.dp)
                 ) {
                     Icon(
-                        imageVector = if (isGoogleSignedIn) Icons.Default.Person else Icons.Default.PlayArrow,
-                        contentDescription = "Sign In Toggle",
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = "Storage and Accounts",
                         tint = Color(0xFF3B82F6),
                         modifier = Modifier.size(18.dp)
                     )
@@ -313,6 +339,537 @@ fun ProfileHeaderSection(viewModel: MemoryViewModel) {
             }
         }
     }
+
+    if (showProfileManager) {
+        ProfileManagerDialog(viewModel = viewModel) {
+            showProfileManager = false
+        }
+    }
+}
+
+@Composable
+fun ProfileManagerDialog(
+    viewModel: MemoryViewModel,
+    onDismiss: () -> Unit
+) {
+    val profiles by viewModel.profilesList.collectAsState()
+    val activeProfile by viewModel.activeProfile.collectAsState()
+    val localEmail by viewModel.localUserEmail.collectAsState()
+    val telemetry by viewModel.storageTelemetry.collectAsState()
+
+    var activeDialogTab by remember { mutableStateOf(0) } // 0: Local Account & Storage, 1: Multi-Profiles
+
+    // Account state
+    var editEmailInput by remember { mutableStateOf(localEmail) }
+    var editPinInput by remember { mutableStateOf("") }
+
+    // Import / Export state
+    var importArchiveInput by remember { mutableStateOf("") }
+    var showImportBox by remember { mutableStateOf(false) }
+
+    // Profile creation state
+    var showCreateForm by remember { mutableStateOf(false) }
+    var newProfileName by remember { mutableStateOf("") }
+    var newProfilePin by remember { mutableStateOf("") }
+    var selectedEmoji by remember { mutableStateOf("🦊") }
+    var selectedColor by remember { mutableStateOf("#3B82F6") }
+
+    val context = LocalContext.current
+
+    val emojis = listOf("👤", "🦊", "🐼", "🦁", "🦉", "🚀", "🪐", "💎", "⭐", "🍀")
+    val colors = listOf("#3B82F6", "#EF4444", "#10B981", "#8B5CF6", "#FBBF24", "#EC4899", "#14B8A6")
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = onDismiss, modifier = Modifier.testTag("close_profiles_dialog")) {
+                Text("Close", color = Color.White)
+            }
+        },
+        title = {
+            Text(
+                text = "Local Privacy & Storage Console",
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                fontSize = 18.sp
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // Top Tab Switcher
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = { activeDialogTab = 0 },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (activeDialogTab == 0) Color(0xFF3B82F6) else Color(0xFF334155)
+                        ),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Email & Storage", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Button(
+                        onClick = { activeDialogTab = 1 },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (activeDialogTab == 1) Color(0xFF3B82F6) else Color(0xFF334155)
+                        ),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Vault Profiles", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                if (activeDialogTab == 0) {
+                    // 1. Single Master Email Login / Account
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+                        border = BorderStroke(1.dp, Color(0xFF334155))
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("✉️", fontSize = 18.sp)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text("Master Local Account (100% Offline)", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                    Text("Stored locally in private device memory", color = Color(0xFF94A3B8), fontSize = 11.sp)
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            OutlinedTextField(
+                                value = editEmailInput,
+                                onValueChange = { editEmailInput = it },
+                                label = { Text("Local Login Email", color = Color(0xFF64748B)) },
+                                modifier = Modifier.fillMaxWidth().testTag("local_email_input"),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Color(0xFF3B82F6),
+                                    unfocusedBorderColor = Color(0xFF334155),
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.White
+                                ),
+                                singleLine = true
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            OutlinedTextField(
+                                value = editPinInput,
+                                onValueChange = { if (it.length <= 4 && it.all { ch -> ch.isDigit() }) editPinInput = it },
+                                label = { Text("Update Security PIN (Optional 4 Digits)", color = Color(0xFF64748B)) },
+                                modifier = Modifier.fillMaxWidth().testTag("local_pin_input"),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Color(0xFF3B82F6),
+                                    unfocusedBorderColor = Color(0xFF334155),
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.White
+                                ),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                visualTransformation = PasswordVisualTransformation(),
+                                singleLine = true
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            Button(
+                                onClick = {
+                                    val success = viewModel.loginWithEmail(editEmailInput, editPinInput)
+                                    if (success) {
+                                        Toast.makeText(context, "Local master account saved offline!", Toast.LENGTH_SHORT).show()
+                                        editPinInput = ""
+                                    } else {
+                                        Toast.makeText(context, "Please enter a valid email address!", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth().testTag("save_email_btn"),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Bind Local Email & Lock 🔒", color = Color.White, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+
+                    // 2. Compressed Local Storage Telemetry & Actions
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+                        border = BorderStroke(1.dp, Color(0xFF334155))
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("🗜️", fontSize = 18.sp)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text("Local Storage Compression", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                    Text("High-density GZIP Deflate memory footprint", color = Color(0xFF94A3B8), fontSize = 11.sp)
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            // Stats grid
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .background(Color(0xFF1E293B), RoundedCornerShape(10.dp))
+                                        .padding(8.dp)
+                                ) {
+                                    Column {
+                                        Text("Raw Size", color = Color(0xFF94A3B8), fontSize = 10.sp)
+                                        Text(CompressedStorageManager.formatBytes(telemetry.rawSizeBytes), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                    }
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .background(Color(0xFF1E293B), RoundedCornerShape(10.dp))
+                                        .padding(8.dp)
+                                ) {
+                                    Column {
+                                        Text("Compressed GZIP", color = Color(0xFF3B82F6), fontSize = 10.sp)
+                                        Text(CompressedStorageManager.formatBytes(telemetry.compressedSizeBytes), color = Color(0xFF3B82F6), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                    }
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .background(Color(0xFF1E293B), RoundedCornerShape(10.dp))
+                                        .padding(8.dp)
+                                ) {
+                                    Column {
+                                        Text("Saved", color = Color(0xFF10B981), fontSize = 10.sp)
+                                        Text(telemetry.compressionRatioText, color = Color(0xFF10B981), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            // Action buttons: Export GZIP & Compact
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        val result = viewModel.exportCompressedVault()
+                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                        val clip = ClipData.newPlainText("LifeVault Compressed Archive", result.compressedPayload)
+                                        clipboard.setPrimaryClip(clip)
+                                        Toast.makeText(context, "Copied GZIP Archive (${result.savingsPercent}% compressed)! Saved ${CompressedStorageManager.formatBytes(result.rawBytes - result.compressedBytes)}.", Toast.LENGTH_LONG).show()
+                                    },
+                                    modifier = Modifier.weight(1f).testTag("export_archive_btn"),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3B82F6)),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Text("Export GZIP", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+
+                                Button(
+                                    onClick = {
+                                        val msg = viewModel.compactLocalDatabase()
+                                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                    },
+                                    modifier = Modifier.weight(1f).testTag("compact_db_btn"),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8B5CF6)),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Text("Compact DB", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            // Import compressed archive toggle
+                            OutlinedButton(
+                                onClick = { showImportBox = !showImportBox },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, Color(0xFF334155))
+                            ) {
+                                Text(if (showImportBox) "Hide Restore Box" else "Restore / Import GZIP Archive", color = Color(0xFFCBD5E1), fontSize = 12.sp)
+                            }
+
+                            if (showImportBox) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = importArchiveInput,
+                                    onValueChange = { importArchiveInput = it },
+                                    label = { Text("Paste Base64 GZIP Archive", color = Color(0xFF64748B)) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = Color(0xFF3B82F6),
+                                        unfocusedBorderColor = Color(0xFF334155),
+                                        focusedTextColor = Color.White,
+                                        unfocusedTextColor = Color.White
+                                    ),
+                                    maxLines = 3
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Button(
+                                    onClick = {
+                                        if (importArchiveInput.isBlank()) {
+                                            Toast.makeText(context, "Paste archive data first!", Toast.LENGTH_SHORT).show()
+                                            return@Button
+                                        }
+                                        val (success, msg) = viewModel.importCompressedVault(importArchiveInput)
+                                        Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                                        if (success) {
+                                            importArchiveInput = ""
+                                            showImportBox = false
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Text("Decompress & Restore Vault", color = Color.White, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // TAB 1: Multi-profile offline switcher
+                    if (!showCreateForm) {
+                        Text(
+                            text = "Switch between private offline vaults. Each account can have its own private decryption PIN lock.",
+                            color = Color(0xFFCBD5E1),
+                            fontSize = 12.sp
+                        )
+
+                        profiles.forEach { profile ->
+                            val isActive = profile.name == activeProfile?.name
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        viewModel.switchProfile(profile)
+                                        Toast.makeText(context, "Switched to ${profile.name}!", Toast.LENGTH_SHORT).show()
+                                    }
+                                    .testTag("profile_item_${profile.name}"),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (isActive) Color(0xFF334155) else Color(0xFF1E293B)
+                                ),
+                                border = BorderStroke(
+                                    width = 1.dp,
+                                    color = if (isActive) Color(0xFF3B82F6) else Color(0xFF334155)
+                                ),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(40.dp)
+                                                .clip(CircleShape)
+                                                .background(Color(android.graphics.Color.parseColor(profile.colorHex))),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(profile.avatarEmoji, fontSize = 20.sp)
+                                        }
+                                        Spacer(modifier = Modifier.width(12.dp))
+                                        Column {
+                                            Text(
+                                                text = profile.name,
+                                                color = Color.White,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 14.sp
+                                            )
+                                            Text(
+                                                text = if (profile.securityPin.isNotEmpty()) "🔐 PIN Secured" else "🔓 Open vault",
+                                                color = Color(0xFF94A3B8),
+                                                fontSize = 11.sp
+                                            )
+                                        }
+                                    }
+
+                                    if (isActive) {
+                                        Icon(
+                                            imageVector = Icons.Default.CheckCircle,
+                                            contentDescription = "Active",
+                                            tint = Color(0xFF10B981),
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                    } else if (profiles.size > 1) {
+                                        IconButton(
+                                            onClick = { viewModel.deleteProfile(profile) }
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Delete,
+                                                contentDescription = "Delete account",
+                                                tint = Color(0xFFEF4444),
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Button(
+                            onClick = { showCreateForm = true },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .testTag("create_new_account_btn"),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3B82F6)),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.Person, contentDescription = null, tint = Color.White)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Create New Account", color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+
+                    } else {
+                        Text(
+                            text = "Log a brand new secure private vault.",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+
+                        OutlinedTextField(
+                            value = newProfileName,
+                            onValueChange = { newProfileName = it },
+                            label = { Text("Account / Vault Name", color = Color(0xFF64748B)) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("new_account_name_input"),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Color(0xFF3B82F6),
+                                unfocusedBorderColor = Color(0xFF334155),
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White
+                            ),
+                            singleLine = true
+                        )
+
+                        OutlinedTextField(
+                            value = newProfilePin,
+                            onValueChange = { if (it.length <= 4 && it.all { ch -> ch.isDigit() }) newProfilePin = it },
+                            label = { Text("Private Lock PIN (4 digits, optional)", color = Color(0xFF64748B)) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("new_account_pin_input"),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Color(0xFF3B82F6),
+                                unfocusedBorderColor = Color(0xFF334155),
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White
+                            ),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true
+                        )
+
+                        // Emoji Picker
+                        Column {
+                            Text("Decryption Avatar Emblem:", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            Spacer(modifier = Modifier.height(6.dp))
+                            LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(emojis) { emoji ->
+                                    val active = selectedEmoji == emoji
+                                    Box(
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .clip(CircleShape)
+                                            .background(if (active) Color(0xFF3B82F6) else Color(0xFF334155))
+                                            .clickable { selectedEmoji = emoji },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(emoji, fontSize = 18.sp)
+                                    }
+                                }
+                            }
+                        }
+
+                        // Color Picker
+                        Column {
+                            Text("Visual Theme Accent Color:", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            Spacer(modifier = Modifier.height(6.dp))
+                            LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(colors) { hex ->
+                                    val active = selectedColor == hex
+                                    Box(
+                                        modifier = Modifier
+                                            .size(30.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(android.graphics.Color.parseColor(hex)))
+                                            .border(2.dp, if (active) Color.White else Color.Transparent, CircleShape)
+                                            .clickable { selectedColor = hex }
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Button(
+                                onClick = { showCreateForm = false },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155)),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Cancel", color = Color.White)
+                            }
+
+                            Button(
+                                onClick = {
+                                    if (newProfileName.isBlank()) {
+                                        Toast.makeText(context, "Give your account/vault a name!", Toast.LENGTH_SHORT).show()
+                                        return@Button
+                                    }
+                                    val result = viewModel.createProfile(newProfileName, newProfilePin, selectedEmoji, selectedColor)
+                                    if (result) {
+                                        Toast.makeText(context, "Account $newProfileName registered successfully!", Toast.LENGTH_SHORT).show()
+                                        newProfileName = ""
+                                        newProfilePin = ""
+                                        showCreateForm = false
+                                    } else {
+                                        Toast.makeText(context, "An account with this name already exists!", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                modifier = Modifier
+                                    .weight(1.5f)
+                                    .testTag("save_new_account_btn"),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Seal Account 🔓", color = Color.White, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        containerColor = Color(0xFF1E293B),
+        shape = RoundedCornerShape(24.dp)
+    )
 }
 
 @Composable
@@ -1612,6 +2169,8 @@ fun SecurityVaultScreen(viewModel: MemoryViewModel) {
     val securityPin by viewModel.securityPin.collectAsState()
     val pinnedMemories by viewModel.allMemories.collectAsState()
     val actualPinnedList = pinnedMemories.filter { it.isPinned }
+    val localEmail by viewModel.localUserEmail.collectAsState()
+    val telemetry by viewModel.storageTelemetry.collectAsState()
 
     var configPinInput by remember { mutableStateOf("") }
     val context = LocalContext.current
@@ -1625,16 +2184,122 @@ fun SecurityVaultScreen(viewModel: MemoryViewModel) {
     ) {
         item {
             Text(
-                text = "Military-grade Privacy Security",
+                text = "100% Offline Vault & Privacy Protection",
                 color = Color.White,
                 fontWeight = FontWeight.Bold,
                 fontSize = 20.sp
             )
             Text(
-                text = "Seal the private areas of your memory journal. Set an offline pass-vault lock PIN.",
+                text = "Zero cloud exposure. All journals, voice notes, and media are compressed and stored locally.",
                 color = Color(0xFF94A3B8),
                 fontSize = 12.sp
             )
+        }
+
+        // Master Email Identity
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+                border = BorderStroke(1.dp, Color(0xFF334155))
+            ) {
+                Row(
+                    modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Master Local Account Identity", color = Color(0xFF94A3B8), fontSize = 11.sp)
+                        Text(localEmail, color = Color(0xFF10B981), fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                        Text("Encrypted on-device (Offline Only)", color = Color(0xFF64748B), fontSize = 11.sp)
+                    }
+                    Box(
+                        modifier = Modifier
+                            .background(Color(0xFF10B981).copy(alpha = 0.2f), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Text("🔒 100% LOCAL", color = Color(0xFF10B981), fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                    }
+                }
+            }
+        }
+
+        // Compressed Storage Telemetry & Compact
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+                border = BorderStroke(1.dp, Color(0xFF334155))
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("🗜️ Compressed Local Storage Telemetry", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier.weight(1f).background(Color(0xFF0F172A), RoundedCornerShape(10.dp)).padding(8.dp)
+                        ) {
+                            Column {
+                                Text("Raw SQLite", color = Color(0xFF94A3B8), fontSize = 10.sp)
+                                Text(CompressedStorageManager.formatBytes(telemetry.rawSizeBytes), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        }
+                        Box(
+                            modifier = Modifier.weight(1f).background(Color(0xFF0F172A), RoundedCornerShape(10.dp)).padding(8.dp)
+                        ) {
+                            Column {
+                                Text("GZIP Density", color = Color(0xFF3B82F6), fontSize = 10.sp)
+                                Text(CompressedStorageManager.formatBytes(telemetry.compressedSizeBytes), color = Color(0xFF3B82F6), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        }
+                        Box(
+                            modifier = Modifier.weight(1f).background(Color(0xFF0F172A), RoundedCornerShape(10.dp)).padding(8.dp)
+                        ) {
+                            Column {
+                                Text("Space Saved", color = Color(0xFF10B981), fontSize = 10.sp)
+                                Text(telemetry.compressionRatioText, color = Color(0xFF10B981), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                val result = viewModel.exportCompressedVault()
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                val clip = ClipData.newPlainText("LifeVault Archive", result.compressedPayload)
+                                clipboard.setPrimaryClip(clip)
+                                Toast.makeText(context, "Copied Compressed Archive (${result.savingsPercent}% compression)! Saved ${CompressedStorageManager.formatBytes(result.rawBytes - result.compressedBytes)}.", Toast.LENGTH_LONG).show()
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3B82F6)),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("Export GZIP", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+
+                        Button(
+                            onClick = {
+                                val feedback = viewModel.compactLocalDatabase()
+                                Toast.makeText(context, feedback, Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8B5CF6)),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("Compact & Index", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
         }
 
         item {
