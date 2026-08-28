@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LifeVault AI — Download Android APK</title>
+  <meta name="description" content="100% Offline, Zero-Cloud, Encrypted AI Memory Vault & Compressed Storage Engine for Android." />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-primary: #0b0f19;
+      --bg-surface: #111827;
+      --bg-card: rgba(31, 41, 55, 0.7);
+      --border-color: rgba(255, 255, 255, 0.1);
+      --accent-primary: #3b82f6;
+      --accent-gradient: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 50%, #ec4899 100%);
+      --text-main: #f9fafb;
+      --text-muted: #9ca3af;
+      --success: #10b981;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: var(--bg-primary);
+      color: var(--text-main);
+      line-height: 1.6;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+      background-image: 
+        radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.15) 0px, transparent 50%),
+        radial-gradient(at 100% 100%, rgba(139, 92, 246, 0.15) 0px, transparent 50%);
+      background-attachment: fixed;
+    }
+
+    .container {
+      max-width: 860px;
+      width: 100%;
+      margin: 0 auto;
+    }
+
+    header {
+      text-align: center;
+      padding: 2.5rem 1rem 1.5rem;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.35rem 0.85rem;
+      background: rgba(59, 130, 246, 0.15);
+      border: 1px solid rgba(59, 130, 246, 0.3);
+      border-radius: 9999px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: #60a5fa;
+      margin-bottom: 1.25rem;
+    }
+
+    .badge-dot {
+      width: 8px;
+      height: 8px;
+      background-color: var(--success);
+      border-radius: 50%;
+      box-shadow: 0 0 8px var(--success);
+    }
+
+    h1 {
+      font-size: 2.75rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      margin-bottom: 1rem;
+      background: var(--accent-gradient);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .subtitle {
+      font-size: 1.15rem;
+      color: var(--text-muted);
+      max-width: 620px;
+      margin: 0 auto 2rem;
+    }
+
+    .hero-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 1.5rem;
+      padding: 2.5rem 2rem;
+      text-align: center;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.5);
+      margin-bottom: 2rem;
+    }
+
+    .btn-download {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.75rem;
+      background: var(--accent-gradient);
+      color: #ffffff;
+      text-decoration: none;
+      font-size: 1.25rem;
+      font-weight: 700;
+      padding: 1.1rem 2.5rem;
+      border-radius: 1rem;
+      transition: all 0.2s ease;
+      box-shadow: 0 10px 25px -5px rgba(59, 130, 246, 0.5);
+      border: none;
+      cursor: pointer;
+    }
+
+    .btn-download:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 15px 30px -5px rgba(59, 130, 246, 0.6);
+    }
+
+    .meta-info {
+      display: flex;
+      justify-content: center;
+      gap: 1.5rem;
+      flex-wrap: wrap;
+      margin-top: 1.25rem;
+      font-size: 0.9rem;
+      color: var(--text-muted);
+    }
+
+    .meta-item {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 1.25rem;
+      margin-bottom: 2rem;
+    }
+
+    .feature-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 1rem;
+      padding: 1.5rem;
+      text-align: left;
+    }
+
+    .feature-icon {
+      font-size: 1.75rem;
+      margin-bottom: 0.75rem;
+    }
+
+    .feature-title {
+      font-size: 1.1rem;
+      font-weight: 700;
+      margin-bottom: 0.35rem;
+      color: var(--text-main);
+    }
+
+    .feature-desc {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+    }
+
+    .instructions-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 1.25rem;
+      padding: 2rem;
+      margin-bottom: 2rem;
+      text-align: left;
+    }
+
+    .instructions-card h2 {
+      font-size: 1.35rem;
+      margin-bottom: 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .steps-list {
+      list-style-position: inside;
+      display: flex;
+      flex-direction: column;
+      gap: 0.85rem;
+      color: #d1d5db;
+      font-size: 0.95rem;
+    }
+
+    .steps-list li strong {
+      color: #ffffff;
+    }
+
+    footer {
+      text-align: center;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      padding: 2rem 0;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      width: 100%;
+    }
+
+    footer a {
+      color: #60a5fa;
+      text-decoration: none;
+    }
+
+    footer a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <header>
+      <div class="badge">
+        <span class="badge-dot"></span>
+        100% Offline &bull; Zero Cloud &bull; Encrypted
+      </div>
+      <h1>LifeVault AI</h1>
+      <p class="subtitle">
+        Your private personal memory vault, voice journal, and high-density compressed storage engine for Android.
+      </p>
+    </header>
+
+    <div class="hero-card">
+      <a href="./lifevault-ai.apk" class="btn-download" download="lifevault-ai.apk">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+          <polyline points="7 10 12 15 17 10"></polyline>
+          <line x1="12" y1="15" x2="12" y2="3"></line>
+        </svg>
+        Download Android APK
+      </a>
+      
+      <div class="meta-info">
+        <div class="meta-item">
+          <span>📦 File: <strong>lifevault-ai.apk</strong></span>
+        </div>
+        <div class="meta-item">
+          <span>📱 Requires: <strong>Android 8.0+</strong></span>
+        </div>
+        <div class="meta-item">
+          <span>🔒 Architecture: <strong>100% Local Device</strong></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="feature-icon">🎙️</div>
+        <div class="feature-title">Voice Journaling Studio</div>
+        <div class="feature-desc">Offline audio recording with speech heuristics, emotional tone detection, and smart tags.</div>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🗜️</div>
+        <div class="feature-title">GZIP Compression Engine</div>
+        <div class="feature-desc">Lossless Deflate stream compression saving 60-80% storage with live byte telemetry.</div>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🔒</div>
+        <div class="feature-title">PIN & Account Security</div>
+        <div class="feature-desc">Master 4-digit PIN lock and multi-profile vaults to protect private thoughts and documents.</div>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">👨‍👩‍👧‍👦</div>
+        <div class="feature-title">Family Vault & Milestones</div>
+        <div class="feature-desc">Relationship tree, academic degrees, travel logs, and interactive milestone slideshows.</div>
+      </div>
+    </div>
+
+    <div class="instructions-card">
+      <h2>📲 How to Install the APK on your Android Phone</h2>
+      <ol class="steps-list">
+        <li>Tap the <strong>Download Android APK</strong> button above to download <code>lifevault-ai.apk</code>.</li>
+        <li>Open your browser's download notifications or your device <strong>Files / Downloads</strong> app.</li>
+        <li>Tap the downloaded <code>lifevault-ai.apk</code> file.</li>
+        <li>If prompted with <em>"Install unknown apps"</em>, toggle <strong>Allow from this source</strong> in your Android Settings.</li>
+        <li>Tap <strong>Install</strong>, then open <strong>LifeVault</strong> to start journaling with 100% offline privacy!</li>
+      </ol>
+    </div>
+
+    <footer>
+      <p>LifeVault AI &bull; Built with Jetpack Compose, Kotlin, Room Database & Material Design 3</p>
+      <p style="margin-top: 0.5rem;">Bound to Master Account: <code>maruganireddisekhar5@gmail.com</code></p>
+    </footer>
+  </div>
+
+</body>
+</html>
