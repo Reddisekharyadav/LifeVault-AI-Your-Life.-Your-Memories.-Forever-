@@ -1,13 +1,18 @@
 package com.example
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
@@ -38,13 +43,17 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.model.LocalMemory
+import com.example.data.model.LocalUser
 import com.example.data.storage.CompressedStorageManager
+import com.example.ui.auth.AuthScreen
+import com.example.ui.auth.ForgotPasswordDialog
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.viewmodel.MemoryViewModel
 import java.text.SimpleDateFormat
@@ -57,11 +66,6 @@ class MainActivity : ComponentActivity() {
         setContent {
             MyApplicationTheme {
                 val viewModel: MemoryViewModel = viewModel()
-                
-                // Seed data automatically on first run to keep the dashboard packed and gorgeous
-                LaunchedEffect(Unit) {
-                    viewModel.seedSampleDataIfEmpty()
-                }
 
                 // WindowInsets padding safe drawing support
                 Scaffold(
@@ -95,24 +99,29 @@ fun MainNavigationHub(
     viewModel: MemoryViewModel,
     modifier: Modifier = Modifier
 ) {
+    val isUserLoggedIn by viewModel.isUserLoggedIn.collectAsState()
     val isKidsMode by viewModel.isKidsMode.collectAsState()
     val isScreenLocked by viewModel.isScreenLocked.collectAsState()
 
-    // Animation transition when switching modes
-    AnimatedContent(
-        targetState = isKidsMode,
-        transitionSpec = {
-            slideInHorizontally { it } + fadeIn() togetherWith slideOutHorizontally { -it } + fadeOut()
-        },
-        label = "mode_transition"
-    ) { kidsActive ->
-        if (kidsActive) {
-            KidsModeWorkspace(viewModel = viewModel, modifier = modifier)
-        } else {
-            if (isScreenLocked) {
-                SecurityLockGate(viewModel = viewModel, modifier = modifier)
+    if (!isUserLoggedIn) {
+        AuthScreen(viewModel = viewModel, modifier = modifier)
+    } else {
+        // Animation transition when switching modes
+        AnimatedContent(
+            targetState = isKidsMode,
+            transitionSpec = {
+                slideInHorizontally { it } + fadeIn() togetherWith slideOutHorizontally { -it } + fadeOut()
+            },
+            label = "mode_transition"
+        ) { kidsActive ->
+            if (kidsActive) {
+                KidsModeWorkspace(viewModel = viewModel, modifier = modifier)
             } else {
-                StandardVaultWorkspace(viewModel = viewModel, modifier = modifier)
+                if (isScreenLocked) {
+                    SecurityLockGate(viewModel = viewModel, modifier = modifier)
+                } else {
+                    StandardVaultWorkspace(viewModel = viewModel, modifier = modifier)
+                }
             }
         }
     }
@@ -213,9 +222,8 @@ fun StandardVaultWorkspace(
 
 @Composable
 fun ProfileHeaderSection(viewModel: MemoryViewModel) {
-    val guestUser by viewModel.guestUser.collectAsState()
+    val currentUser by viewModel.currentUser.collectAsState()
     val localUserEmail by viewModel.localUserEmail.collectAsState()
-    val activeProfile by viewModel.activeProfile.collectAsState()
     var showProfileManager by remember { mutableStateOf(false) }
 
     Card(
@@ -240,8 +248,14 @@ fun ProfileHeaderSection(viewModel: MemoryViewModel) {
                     .testTag("profile_section_click"),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                val avatarEmoji = activeProfile?.avatarEmoji ?: "👤"
-                val avatarColor = Color(android.graphics.Color.parseColor(activeProfile?.colorHex ?: "#3B82F6"))
+                val avatarEmoji = currentUser?.avatarEmoji ?: "👤"
+                val avatarColor = Color(
+                    try {
+                        android.graphics.Color.parseColor(currentUser?.colorHex ?: "#3B82F6")
+                    } catch (e: Exception) {
+                        0xFF3B82F6.toInt()
+                    }
+                )
 
                 Box(
                     modifier = Modifier
@@ -259,7 +273,7 @@ fun ProfileHeaderSection(viewModel: MemoryViewModel) {
                 Column {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            text = guestUser,
+                            text = currentUser?.fullName ?: localUserEmail.substringBefore("@"),
                             color = Color.White,
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 16.sp,
@@ -293,7 +307,7 @@ fun ProfileHeaderSection(viewModel: MemoryViewModel) {
             Spacer(modifier = Modifier.width(8.dp))
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                // Storage & Compression Manager Quick Button
+                // Storage & Accounts Quick Button
                 IconButton(
                     onClick = { showProfileManager = true },
                     modifier = Modifier.background(Color(0xFF334155), CircleShape).size(36.dp)
@@ -352,30 +366,26 @@ fun ProfileManagerDialog(
     viewModel: MemoryViewModel,
     onDismiss: () -> Unit
 ) {
-    val profiles by viewModel.profilesList.collectAsState()
-    val activeProfile by viewModel.activeProfile.collectAsState()
+    val registeredUsers by viewModel.registeredUsers.collectAsState()
+    val currentUser by viewModel.currentUser.collectAsState()
     val localEmail by viewModel.localUserEmail.collectAsState()
     val telemetry by viewModel.storageTelemetry.collectAsState()
 
-    var activeDialogTab by remember { mutableStateOf(0) } // 0: Local Account & Storage, 1: Multi-Profiles
-
-    // Account state
-    var editEmailInput by remember { mutableStateOf(localEmail) }
-    var editPinInput by remember { mutableStateOf("") }
+    var activeDialogTab by remember { mutableStateOf(0) } // 0: Local Account & Storage, 1: Device Accounts
 
     // Import / Export state
     var importArchiveInput by remember { mutableStateOf("") }
     var showImportBox by remember { mutableStateOf(false) }
 
-    // Profile creation state
+    // New user creation state
     var showCreateForm by remember { mutableStateOf(false) }
-    var newProfileName by remember { mutableStateOf("") }
-    var newProfilePin by remember { mutableStateOf("") }
-    var selectedEmoji by remember { mutableStateOf("🦊") }
+    var newUserName by remember { mutableStateOf("") }
+    var newUserEmail by remember { mutableStateOf("") }
+    var newUserPin by remember { mutableStateOf("") }
+    var selectedEmoji by remember { mutableStateOf("👤") }
     var selectedColor by remember { mutableStateOf("#3B82F6") }
 
     val context = LocalContext.current
-
     val emojis = listOf("👤", "🦊", "🐼", "🦁", "🦉", "🚀", "🪐", "💎", "⭐", "🍀")
     val colors = listOf("#3B82F6", "#EF4444", "#10B981", "#8B5CF6", "#FBBF24", "#EC4899", "#14B8A6")
 
@@ -388,7 +398,7 @@ fun ProfileManagerDialog(
         },
         title = {
             Text(
-                text = "Local Privacy & Storage Console",
+                text = "Local Account & Storage Console",
                 color = Color.White,
                 fontWeight = FontWeight.Bold,
                 fontSize = 18.sp
@@ -414,7 +424,7 @@ fun ProfileManagerDialog(
                         ),
                         shape = RoundedCornerShape(12.dp)
                     ) {
-                        Text("Email & Storage", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("Active Vault", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
                     Button(
                         onClick = { activeDialogTab = 1 },
@@ -424,80 +434,67 @@ fun ProfileManagerDialog(
                         ),
                         shape = RoundedCornerShape(12.dp)
                     ) {
-                        Text("Vault Profiles", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("Device Accounts", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
                 }
 
                 if (activeDialogTab == 0) {
-                    // 1. Single Master Email Login / Account
+                    // Current User Card
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
                         border = BorderStroke(1.dp, Color(0xFF334155))
                     ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
+                        Column(modifier = Modifier.padding(14.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("✉️", fontSize = 18.sp)
-                                Spacer(modifier = Modifier.width(8.dp))
+                                val avatarEmoji = currentUser?.avatarEmoji ?: "👤"
+                                Box(
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .background(Color(0xFF3B82F6), CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(avatarEmoji, fontSize = 22.sp)
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
                                 Column {
-                                    Text("Master Local Account (100% Offline)", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                    Text("Stored locally in private device memory", color = Color(0xFF94A3B8), fontSize = 11.sp)
+                                    Text(
+                                        text = currentUser?.fullName ?: "Local User",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp
+                                    )
+                                    Text(
+                                        text = localEmail,
+                                        color = Color(0xFF10B981),
+                                        fontSize = 12.sp
+                                    )
                                 }
                             }
-                            Spacer(modifier = Modifier.height(10.dp))
 
-                            OutlinedTextField(
-                                value = editEmailInput,
-                                onValueChange = { editEmailInput = it },
-                                label = { Text("Local Login Email", color = Color(0xFF64748B)) },
-                                modifier = Modifier.fillMaxWidth().testTag("local_email_input"),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = Color(0xFF3B82F6),
-                                    unfocusedBorderColor = Color(0xFF334155),
-                                    focusedTextColor = Color.White,
-                                    unfocusedTextColor = Color.White
-                                ),
-                                singleLine = true
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
+                            Spacer(modifier = Modifier.height(12.dp))
 
-                            OutlinedTextField(
-                                value = editPinInput,
-                                onValueChange = { if (it.length <= 4 && it.all { ch -> ch.isDigit() }) editPinInput = it },
-                                label = { Text("Update Security PIN (Optional 4 Digits)", color = Color(0xFF64748B)) },
-                                modifier = Modifier.fillMaxWidth().testTag("local_pin_input"),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = Color(0xFF3B82F6),
-                                    unfocusedBorderColor = Color(0xFF334155),
-                                    focusedTextColor = Color.White,
-                                    unfocusedTextColor = Color.White
-                                ),
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                visualTransformation = PasswordVisualTransformation(),
-                                singleLine = true
-                            )
-                            Spacer(modifier = Modifier.height(10.dp))
-
-                            Button(
-                                onClick = {
-                                    val success = viewModel.loginWithEmail(editEmailInput, editPinInput)
-                                    if (success) {
-                                        Toast.makeText(context, "Local master account saved offline!", Toast.LENGTH_SHORT).show()
-                                        editPinInput = ""
-                                    } else {
-                                        Toast.makeText(context, "Please enter a valid email address!", Toast.LENGTH_SHORT).show()
-                                    }
-                                },
-                                modifier = Modifier.fillMaxWidth().testTag("save_email_btn"),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
-                                shape = RoundedCornerShape(10.dp)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Text("Bind Local Email & Lock 🔒", color = Color.White, fontWeight = FontWeight.Bold)
+                                Button(
+                                    onClick = {
+                                        viewModel.logout()
+                                        onDismiss()
+                                        Toast.makeText(context, "Signed out of local vault.", Toast.LENGTH_SHORT).show()
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Text("Sign Out", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
                             }
                         }
                     }
 
-                    // 2. Compressed Local Storage Telemetry & Actions
+                    // Local Storage Telemetry & Actions
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
@@ -508,8 +505,8 @@ fun ProfileManagerDialog(
                                 Text("🗜️", fontSize = 18.sp)
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Column {
-                                    Text("Local Storage Compression", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                    Text("High-density GZIP Deflate memory footprint", color = Color(0xFF94A3B8), fontSize = 11.sp)
+                                    Text("Compressed Storage Telemetry", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                    Text("High-density GZIP memory footprint", color = Color(0xFF94A3B8), fontSize = 11.sp)
                                 }
                             }
                             Spacer(modifier = Modifier.height(12.dp))
@@ -640,24 +637,24 @@ fun ProfileManagerDialog(
                         }
                     }
                 } else {
-                    // TAB 1: Multi-profile offline switcher
+                    // TAB 1: Switch between accounts or create a new one
                     if (!showCreateForm) {
                         Text(
-                            text = "Switch between private offline vaults. Each account can have its own private decryption PIN lock.",
+                            text = "Switch between local accounts on this device. Each user's data is completely isolated and stored offline.",
                             color = Color(0xFFCBD5E1),
                             fontSize = 12.sp
                         )
 
-                        profiles.forEach { profile ->
-                            val isActive = profile.name == activeProfile?.name
+                        registeredUsers.forEach { user ->
+                            val isActive = user.email == localEmail
                             Card(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable {
-                                        viewModel.switchProfile(profile)
-                                        Toast.makeText(context, "Switched to ${profile.name}!", Toast.LENGTH_SHORT).show()
+                                        viewModel.switchUser(user)
+                                        Toast.makeText(context, "Switched to ${user.fullName}!", Toast.LENGTH_SHORT).show()
                                     }
-                                    .testTag("profile_item_${profile.name}"),
+                                    .testTag("user_account_item_${user.email}"),
                                 colors = CardDefaults.cardColors(
                                     containerColor = if (isActive) Color(0xFF334155) else Color(0xFF1E293B)
                                 ),
@@ -679,21 +676,29 @@ fun ProfileManagerDialog(
                                             modifier = Modifier
                                                 .size(40.dp)
                                                 .clip(CircleShape)
-                                                .background(Color(android.graphics.Color.parseColor(profile.colorHex))),
+                                                .background(
+                                                    Color(
+                                                        try {
+                                                            android.graphics.Color.parseColor(user.colorHex)
+                                                        } catch (e: Exception) {
+                                                            0xFF3B82F6.toInt()
+                                                        }
+                                                    )
+                                                ),
                                             contentAlignment = Alignment.Center
                                         ) {
-                                            Text(profile.avatarEmoji, fontSize = 20.sp)
+                                            Text(user.avatarEmoji, fontSize = 20.sp)
                                         }
                                         Spacer(modifier = Modifier.width(12.dp))
                                         Column {
                                             Text(
-                                                text = profile.name,
+                                                text = user.fullName,
                                                 color = Color.White,
                                                 fontWeight = FontWeight.Bold,
                                                 fontSize = 14.sp
                                             )
                                             Text(
-                                                text = if (profile.securityPin.isNotEmpty()) "🔐 PIN Secured" else "🔓 Open vault",
+                                                text = user.email,
                                                 color = Color(0xFF94A3B8),
                                                 fontSize = 11.sp
                                             )
@@ -707,17 +712,6 @@ fun ProfileManagerDialog(
                                             tint = Color(0xFF10B981),
                                             modifier = Modifier.size(24.dp)
                                         )
-                                    } else if (profiles.size > 1) {
-                                        IconButton(
-                                            onClick = { viewModel.deleteProfile(profile) }
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Delete,
-                                                contentDescription = "Delete account",
-                                                tint = Color(0xFFEF4444),
-                                                modifier = Modifier.size(20.dp)
-                                            )
-                                        }
                                     }
                                 }
                             }
@@ -734,24 +728,22 @@ fun ProfileManagerDialog(
                         ) {
                             Icon(Icons.Default.Person, contentDescription = null, tint = Color.White)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Create New Account", color = Color.White, fontWeight = FontWeight.Bold)
+                            Text("Create Another Local Account", color = Color.White, fontWeight = FontWeight.Bold)
                         }
 
                     } else {
                         Text(
-                            text = "Log a brand new secure private vault.",
+                            text = "Register a new local account on this device.",
                             color = Color.White,
                             fontWeight = FontWeight.Bold,
                             fontSize = 14.sp
                         )
 
                         OutlinedTextField(
-                            value = newProfileName,
-                            onValueChange = { newProfileName = it },
-                            label = { Text("Account / Vault Name", color = Color(0xFF64748B)) },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("new_account_name_input"),
+                            value = newUserName,
+                            onValueChange = { newUserName = it },
+                            label = { Text("Full Name", color = Color(0xFF64748B)) },
+                            modifier = Modifier.fillMaxWidth(),
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedBorderColor = Color(0xFF3B82F6),
                                 unfocusedBorderColor = Color(0xFF334155),
@@ -762,26 +754,38 @@ fun ProfileManagerDialog(
                         )
 
                         OutlinedTextField(
-                            value = newProfilePin,
-                            onValueChange = { if (it.length <= 4 && it.all { ch -> ch.isDigit() }) newProfilePin = it },
-                            label = { Text("Private Lock PIN (4 digits, optional)", color = Color(0xFF64748B)) },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("new_account_pin_input"),
+                            value = newUserEmail,
+                            onValueChange = { newUserEmail = it },
+                            label = { Text("Email Address", color = Color(0xFF64748B)) },
+                            modifier = Modifier.fillMaxWidth(),
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedBorderColor = Color(0xFF3B82F6),
                                 unfocusedBorderColor = Color(0xFF334155),
                                 focusedTextColor = Color.White,
                                 unfocusedTextColor = Color.White
                             ),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true
+                        )
+
+                        OutlinedTextField(
+                            value = newUserPin,
+                            onValueChange = { newUserPin = it },
+                            label = { Text("Security PIN / Password (min 4 digits)", color = Color(0xFF64748B)) },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Color(0xFF3B82F6),
+                                unfocusedBorderColor = Color(0xFF334155),
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White
+                            ),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                             visualTransformation = PasswordVisualTransformation(),
                             singleLine = true
                         )
 
                         // Emoji Picker
                         Column {
-                            Text("Decryption Avatar Emblem:", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            Text("Profile Avatar:", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                             Spacer(modifier = Modifier.height(6.dp))
                             LazyRow(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -804,7 +808,7 @@ fun ProfileManagerDialog(
 
                         // Color Picker
                         Column {
-                            Text("Visual Theme Accent Color:", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            Text("Theme Color:", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                             Spacer(modifier = Modifier.height(6.dp))
                             LazyRow(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -840,18 +844,19 @@ fun ProfileManagerDialog(
 
                             Button(
                                 onClick = {
-                                    if (newProfileName.isBlank()) {
-                                        Toast.makeText(context, "Give your account/vault a name!", Toast.LENGTH_SHORT).show()
-                                        return@Button
-                                    }
-                                    val result = viewModel.createProfile(newProfileName, newProfilePin, selectedEmoji, selectedColor)
-                                    if (result) {
-                                        Toast.makeText(context, "Account $newProfileName registered successfully!", Toast.LENGTH_SHORT).show()
-                                        newProfileName = ""
-                                        newProfilePin = ""
+                                    val (success, msg) = viewModel.signUp(
+                                        fullName = newUserName,
+                                        email = newUserEmail,
+                                        pinOrPass = newUserPin,
+                                        avatarEmoji = selectedEmoji,
+                                        colorHex = selectedColor
+                                    )
+                                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                    if (success) {
+                                        newUserName = ""
+                                        newUserEmail = ""
+                                        newUserPin = ""
                                         showCreateForm = false
-                                    } else {
-                                        Toast.makeText(context, "An account with this name already exists!", Toast.LENGTH_SHORT).show()
                                     }
                                 },
                                 modifier = Modifier
@@ -860,7 +865,7 @@ fun ProfileManagerDialog(
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
                                 shape = RoundedCornerShape(10.dp)
                             ) {
-                                Text("Seal Account 🔓", color = Color.White, fontWeight = FontWeight.Bold)
+                                Text("Save & Switch", color = Color.White, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -916,13 +921,42 @@ fun DashboardScreen(
     viewModel: MemoryViewModel,
     onNavigateToCreator: () -> Unit
 ) {
+    val context = LocalContext.current
     val memories by viewModel.allMemories.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val isRecording by viewModel.isRecording.collectAsState()
     val isRecordingPaused by viewModel.isRecordingPaused.collectAsState()
     val recordingDuration by viewModel.recordingDuration.collectAsState()
+    val liveTranscript by viewModel.liveTranscript.collectAsState()
+    val speechStatus by viewModel.speechStatus.collectAsState()
+    val audioRmsLevel by viewModel.audioRmsLevel.collectAsState()
 
     var showSlideshow by remember { mutableStateOf(false) }
+    var voiceTitle by remember { mutableStateOf("") }
+    var selectedMood by remember { mutableStateOf("CALM") }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            viewModel.startRecording()
+        } else {
+            Toast.makeText(context, "Microphone permission is required for voice recording and transcription.", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    val requestVoiceRecord = {
+        val hasPermission = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (hasPermission) {
+            viewModel.startRecording()
+        } else {
+            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -1024,95 +1058,287 @@ fun DashboardScreen(
             )
         }
 
-        // Voice First Microphone Panel
+        // Live Voice Recording & Speech-to-Text Panel
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
                 shape = RoundedCornerShape(24.dp),
-                border = BorderStroke(1.dp, Color(0xFF334155))
+                border = BorderStroke(1.5.dp, if (isRecording) Color(0xFFEF4444) else Color(0xFF334155))
             ) {
                 Column(
                     modifier = Modifier.padding(18.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text(
-                        text = "Press & Speak to Journal",
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp
-                    )
-                    Text(
-                        text = "Your narration will transcribe, analyze emotions & summarize instantly offline",
-                        color = Color(0xFF94A3B8),
-                        fontSize = 12.sp,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(vertical = 4.dp)
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    if (isRecording) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(16.dp)
-                        ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
                                 modifier = Modifier
-                                    .size(64.dp)
+                                    .size(10.dp)
                                     .clip(CircleShape)
-                                    .background(Color(0xFFEF4444))
-                                    .clickable { viewModel.pauseRecording() },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = if (isRecordingPaused) Icons.Default.PlayArrow else Icons.Default.Star,
-                                    contentDescription = "Pause",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(28.dp)
+                                    .background(if (isRecording) Color(0xFFEF4444) else Color(0xFF10B981))
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = if (isRecording) "LIVE SPEECH CONVERSION" else "VOICE-FIRST JOURNAL",
+                                color = if (isRecording) Color(0xFFEF4444) else Color(0xFF94A3B8),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp,
+                                style = TextStyle(letterSpacing = 1.sp)
+                            )
+                        }
+
+                        // Storage badge
+                        Box(
+                            modifier = Modifier
+                                .background(Color(0xFF0F172A), RoundedCornerShape(8.dp))
+                                .border(1.dp, Color(0xFF334155), RoundedCornerShape(8.dp))
+                                .padding(horizontal = 8.dp, vertical = 3.dp)
+                        ) {
+                            Text(
+                                text = "📱 In-App Local Phone Storage",
+                                color = Color(0xFF60A5FA),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    if (isRecording) {
+                        // Sound Wave Visualizer
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(36.dp)
+                                .background(Color(0xFF0F172A), RoundedCornerShape(12.dp))
+                                .padding(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            val bars = listOf(0.4f, 0.7f, 1.0f, 0.6f, 0.9f, 0.5f, 0.8f, 0.3f, 0.95f, 0.6f, 0.4f)
+                            bars.forEachIndexed { index, scale ->
+                                val heightFactor = (audioRmsLevel * scale * 26f).coerceIn(4f, 30f)
+                                Box(
+                                    modifier = Modifier
+                                        .width(4.dp)
+                                        .height(heightFactor.dp)
+                                        .clip(RoundedCornerShape(2.dp))
+                                        .background(if (index % 2 == 0) Color(0xFFEF4444) else Color(0xFFF59E0B))
                                 )
                             }
+                        }
 
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // Live Status & Timer
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = speechStatus,
+                                color = Color(0xFF38BDF8),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                text = "⏱ 00:${String.format("%02d", recordingDuration)}",
+                                color = Color(0xFFEF4444),
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 18.sp
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // Real-Time Converted Text Input / Live Display
+                        Text(
+                            text = "Speech-to-Text Live Transcript (Editable):",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        OutlinedTextField(
+                            value = liveTranscript,
+                            onValueChange = { viewModel.updateLiveTranscript(it) },
+                            placeholder = {
                                 Text(
-                                    text = "00:${String.format("%02d", recordingDuration)}",
-                                    color = Color(0xFFEF4444),
-                                    fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 24.sp
+                                    "Speak now into your microphone... Transcribed words appear here in real time.",
+                                    color = Color(0xFF64748B),
+                                    fontSize = 13.sp
                                 )
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 90.dp, max = 150.dp)
+                                .testTag("voice_live_transcript_field"),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Color(0xFF10B981),
+                                unfocusedBorderColor = Color(0xFF475569),
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                focusedContainerColor = Color(0xFF0F172A),
+                                unfocusedContainerColor = Color(0xFF0F172A)
+                            ),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // Memoir Title (Optional)
+                        OutlinedTextField(
+                            value = voiceTitle,
+                            onValueChange = { voiceTitle = it },
+                            placeholder = { Text("Memory Title (Optional)", color = Color(0xFF64748B), fontSize = 12.sp) },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Color(0xFF3B82F6),
+                                unfocusedBorderColor = Color(0xFF334155),
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                focusedContainerColor = Color(0xFF0F172A),
+                                unfocusedContainerColor = Color(0xFF0F172A)
+                            ),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // Mood selection chips
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            val moods = listOf(
+                                "CALM" to "🧘 Calm",
+                                "HAPPY" to "😊 Happy",
+                                "EXCITED" to "🤩 Excited",
+                                "TIRED" to "😴 Tired",
+                                "SAD" to "😢 Sad",
+                                "GRATEFUL" to "🙏 Grateful"
+                            )
+                            moods.forEach { (moodKey, moodLabel) ->
+                                val isSelected = selectedMood == moodKey
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(20.dp))
+                                        .background(if (isSelected) Color(0xFF3B82F6) else Color(0xFF0F172A))
+                                        .border(1.dp, if (isSelected) Color(0xFF60A5FA) else Color(0xFF334155), RoundedCornerShape(20.dp))
+                                        .clickable { selectedMood = moodKey }
+                                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                                ) {
+                                    Text(
+                                        text = moodLabel,
+                                        color = if (isSelected) Color.White else Color(0xFF94A3B8),
+                                        fontSize = 11.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // Controls Row: Done & Save, Pause, Cancel
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    viewModel.stopAndSaveVoiceRecording(voiceTitle, selectedMood)
+                                    voiceTitle = ""
+                                },
+                                modifier = Modifier
+                                    .weight(1.5f)
+                                    .height(44.dp)
+                                    .testTag("save_voice_memo_button"),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Icon(Icons.Default.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Save to Vault", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            }
+
+                            Button(
+                                onClick = {
+                                    if (isRecordingPaused) viewModel.resumeRecording() else viewModel.pauseRecording()
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(44.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF475569)),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
                                 Text(
-                                    text = if (isRecordingPaused) "Paused" else "Recording Live...",
-                                    color = Color(0xFF94A3B8),
+                                    text = if (isRecordingPaused) "Resume" else "Pause",
+                                    color = Color.White,
                                     fontSize = 12.sp
                                 )
                             }
 
                             Button(
-                                onClick = { viewModel.stopAndSaveVoiceRecording("Voice Memoir", "CALM") },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Text("Done", color = Color.White, fontWeight = FontWeight.Bold)
-                            }
-
-                            Button(
-                                onClick = { viewModel.cancelRecording() },
+                                onClick = {
+                                    viewModel.cancelRecording()
+                                    voiceTitle = ""
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(44.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155)),
                                 shape = RoundedCornerShape(12.dp)
                             ) {
-                                Text("Cancel", color = Color.White)
+                                Text("Cancel", color = Color(0xFFCBD5E1), fontSize = 12.sp)
                             }
                         }
                     } else {
+                        // Idle Press & Speak UI
+                        Text(
+                            text = "Press & Speak to Journal",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 17.sp
+                        )
+                        Text(
+                            text = "Speaks directly into the microphone. Converts your speech to text live and safely stores the memo inside your phone's internal storage.",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 12.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(vertical = 6.dp)
+                        )
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
                         Button(
-                            onClick = { viewModel.startRecording() },
+                            onClick = requestVoiceRecord,
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
                             shape = CircleShape,
                             modifier = Modifier
                                 .size(72.dp)
                                 .testTag("mic_button")
                         ) {
-                            Icon(Icons.Default.PlayArrow, contentDescription = "Start Voice Entry", tint = Color.White, modifier = Modifier.size(36.dp))
+                            Icon(
+                                Icons.Default.PlayArrow,
+                                contentDescription = "Start Voice Entry",
+                                tint = Color.White,
+                                modifier = Modifier.size(36.dp)
+                            )
                         }
                     }
                 }
@@ -1235,8 +1461,8 @@ fun DashboardScreen(
                     ) {
                         Icon(Icons.Default.Info, contentDescription = null, tint = Color(0xFF64748B), modifier = Modifier.size(48.dp))
                         Spacer(modifier = Modifier.height(8.dp))
-                        Text("No Memories Found", color = Color.White, fontWeight = FontWeight.Bold)
-                        Text("Seed mock data at the profile top-right or add a new journal entry to start!", color = Color(0xFF94A3B8), fontSize = 11.sp, textAlign = TextAlign.Center)
+                        Text("No Memories Yet", color = Color.White, fontWeight = FontWeight.Bold)
+                        Text("Tap '+ Add New' or use Voice Journaling above to record your first memory in your private vault!", color = Color(0xFF94A3B8), fontSize = 11.sp, textAlign = TextAlign.Center)
                     }
                 }
             }
@@ -1331,7 +1557,13 @@ fun MemoryItemRow(
     memory: LocalMemory,
     viewModel: MemoryViewModel
 ) {
+    val context = LocalContext.current
     var expanded by remember { mutableStateOf(false) }
+    val playingMemoryId by viewModel.playingMemoryId.collectAsState()
+    val audioProgress by viewModel.audioProgress.collectAsState()
+    val isPlayingThis = playingMemoryId == memory.id
+
+    val isVoiceMemory = memory.type == "VOICE" || memory.audioPath.isNotBlank() || memory.voiceTranscript.isNotBlank()
 
     Card(
         modifier = Modifier
@@ -1340,15 +1572,19 @@ fun MemoryItemRow(
             .testTag("memory_item_card_${memory.id}"),
         colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
         shape = RoundedCornerShape(20.dp),
-        border = BorderStroke(1.dp, Color(0xFF334155))
+        border = BorderStroke(1.dp, if (isVoiceMemory) Color(0xFFEF4444).copy(alpha = 0.4f) else Color(0xFF334155))
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
+            // Header Row: Type Badge + Title + Actions
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     val badgeColor = when (memory.type) {
                         "DREAM" -> Color(0xFF8B5CF6)
                         "GRATITUDE" -> Color(0xFF10B981)
@@ -1364,7 +1600,12 @@ fun MemoryItemRow(
                             .background(badgeColor, RoundedCornerShape(8.dp))
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
-                        Text(text = memory.type, color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = if (memory.type == "VOICE") "🎙️ VOICE MEMOIR" else memory.type,
+                            color = Color.White,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
 
                     Spacer(modifier = Modifier.width(8.dp))
@@ -1372,7 +1613,9 @@ fun MemoryItemRow(
                         text = memory.title,
                         color = Color.White,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp
+                        fontSize = 16.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
@@ -1395,27 +1638,152 @@ fun MemoryItemRow(
                 }
             }
 
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
-            Text(
-                text = if (memory.isCapsuleLocked) "🔐 Time Capsule Locked! Date scheduled: Unlocking soon" else memory.content,
-                color = Color(0xFFCBD5E1),
-                fontSize = 14.sp,
-                maxLines = if (expanded) Int.MAX_VALUE else 2,
-                overflow = TextOverflow.Ellipsis
-            )
+            // Main Content / Speech-to-Text Transcript Presentation
+            if (isVoiceMemory) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, Color(0xFF334155))
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "📝 Transcribed Speech (Local):",
+                                color = Color(0xFF38BDF8),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            IconButton(
+                                onClick = {
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    val clip = ClipData.newPlainText("Transcribed Speech", memory.content)
+                                    clipboard.setPrimaryClip(clip)
+                                    Toast.makeText(context, "Transcript copied to clipboard!", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Share,
+                                    contentDescription = "Copy transcript",
+                                    tint = Color(0xFF94A3B8),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                        }
 
-            if (memory.isCapsuleLocked) {
-                Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        Text(
+                            text = memory.content.ifBlank { memory.voiceTranscript.ifBlank { "Spontaneous voice memo" } },
+                            color = Color(0xFFF1F5F9),
+                            fontSize = 14.sp,
+                            lineHeight = 20.sp,
+                            maxLines = if (expanded) Int.MAX_VALUE else 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
+
+                        // In-App Local Audio Player Bar
+                        if (memory.audioPath.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(Color(0xFF1E293B), RoundedCornerShape(10.dp))
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(CircleShape)
+                                        .background(if (isPlayingThis) Color(0xFFEF4444) else Color(0xFF3B82F6))
+                                        .clickable { viewModel.playMemoryAudio(memory) },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = if (isPlayingThis) Icons.Default.Close else Icons.Default.PlayArrow,
+                                        contentDescription = if (isPlayingThis) "Stop Audio" else "Play Audio",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = if (isPlayingThis) "▶ Playing local phone audio..." else "Local Audio Recording",
+                                        color = if (isPlayingThis) Color(0xFFEF4444) else Color(0xFFCBD5E1),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Spacer(modifier = Modifier.height(3.dp))
+                                    LinearProgressIndicator(
+                                        progress = { if (isPlayingThis) audioProgress else 0f },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(4.dp)
+                                            .clip(CircleShape),
+                                        color = Color(0xFFEF4444),
+                                        trackColor = Color(0xFF334155)
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "📱 Private App Storage: ${memory.audioPath.ifBlank { "local_stt.txt" }}",
+                                color = Color(0xFF64748B),
+                                fontSize = 10.sp
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .background(Color(0xFF334155), RoundedCornerShape(6.dp))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = memory.mood,
+                                    color = Color(0xFF60A5FA),
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+            } else {
                 Text(
-                    text = "This memory will open at the specified capsule date.",
-                    color = Color(0xFFFBBF24),
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold
+                    text = if (memory.isCapsuleLocked) "🔐 Time Capsule Locked! Date scheduled: Unlocking soon" else memory.content,
+                    color = Color(0xFFCBD5E1),
+                    fontSize = 14.sp,
+                    maxLines = if (expanded) Int.MAX_VALUE else 3,
+                    overflow = TextOverflow.Ellipsis
                 )
+
+                if (memory.isCapsuleLocked) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "This memory will open at the specified capsule date.",
+                        color = Color(0xFFFBBF24),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             }
 
-            // Expanded detail segment for stories of childhood/chapters and tag lists
+            // Expanded detail segment for stories and tag lists
             if (expanded && !memory.isCapsuleLocked) {
                 Spacer(modifier = Modifier.height(12.dp))
 
@@ -2391,38 +2759,66 @@ fun SecurityLockGate(
     modifier: Modifier = Modifier
 ) {
     var attemptCode by remember { mutableStateOf("") }
+    var showPassword by remember { mutableStateOf(false) }
+    var showForgotDialog by remember { mutableStateOf(false) }
+    val currentUser by viewModel.currentUser.collectAsState()
     val context = LocalContext.current
 
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(Color(0xFF0F172A)),
+            .background(Color(0xFF0F172A))
+            .padding(24.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Icon(Icons.Default.Lock, contentDescription = "Locked icon", tint = Color(0xFFEF4444), modifier = Modifier.size(72.dp))
-        Spacer(modifier = Modifier.height(12.dp))
-        Text("Memory Vault is Private", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 22.sp)
-        Text("Provide your 4-digit security PIN to unlock session", color = Color(0xFF94A3B8), fontSize = 13.sp)
+        Surface(
+            shape = CircleShape,
+            color = Color(0xFFEF4444).copy(alpha = 0.15f),
+            border = BorderStroke(2.dp, Color(0xFFEF4444).copy(alpha = 0.4f)),
+            modifier = Modifier.size(80.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.Lock, contentDescription = "Locked icon", tint = Color(0xFFEF4444), modifier = Modifier.size(40.dp))
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+        Text("Memory Vault is Locked", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 22.sp)
+        Text(
+            text = if (currentUser != null) "Active user: ${currentUser?.fullName} (${currentUser?.email})" else "Enter your Security PIN / Password to unlock",
+            color = Color(0xFF94A3B8),
+            fontSize = 13.sp,
+            textAlign = TextAlign.Center
+        )
 
         Spacer(modifier = Modifier.height(24.dp))
 
         OutlinedTextField(
             value = attemptCode,
-            onValueChange = { if (it.length <= 4 && it.all { ch -> ch.isDigit() }) attemptCode = it },
-            label = { Text("Unlock PIN", color = Color(0xFF64748B)) },
+            onValueChange = { attemptCode = it },
+            label = { Text("Unlock PIN / Password", color = Color(0xFF64748B)) },
             modifier = Modifier
-                .width(200.dp)
+                .fillMaxWidth(0.85f)
                 .testTag("security_pin_input"),
-            textStyle = TextStyle(textAlign = TextAlign.Center, color = Color.White),
+            textStyle = TextStyle(textAlign = TextAlign.Center, color = Color.White, fontSize = 16.sp),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = Color(0xFF3B82F6),
                 unfocusedBorderColor = Color(0xFF334155),
                 focusedTextColor = Color.White,
                 unfocusedTextColor = Color.White
             ),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+            trailingIcon = {
+                IconButton(onClick = { showPassword = !showPassword }) {
+                    Icon(
+                        if (showPassword) Icons.Default.Done else Icons.Default.Lock,
+                        contentDescription = "Toggle password visibility",
+                        tint = Color(0xFF94A3B8)
+                    )
+                }
+            },
             singleLine = true
         )
 
@@ -2432,15 +2828,52 @@ fun SecurityLockGate(
             onClick = {
                 val success = viewModel.attemptUnlock(attemptCode)
                 if (!success) {
-                    Toast.makeText(context, "Invalid PIN code! Try again.", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Incorrect PIN or Password! Try again or reset.", Toast.LENGTH_SHORT).show()
                 }
                 attemptCode = ""
             },
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3B82F6)),
-            modifier = Modifier.minimumInteractiveComponentSize()
+            modifier = Modifier
+                .fillMaxWidth(0.85f)
+                .height(48.dp)
+                .testTag("decrypt_vault_btn"),
+            shape = RoundedCornerShape(12.dp)
         ) {
+            Icon(Icons.Default.Lock, contentDescription = null, tint = Color.White)
+            Spacer(modifier = Modifier.width(8.dp))
             Text("Decrypt Vault", fontWeight = FontWeight.Bold)
         }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(
+                onClick = { showForgotDialog = true },
+                modifier = Modifier.testTag("lock_forgot_pin_btn")
+            ) {
+                Text("Forgot PIN?", color = Color(0xFF60A5FA), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            }
+
+            Text("•", color = Color(0xFF475569))
+
+            TextButton(
+                onClick = { viewModel.logout() },
+                modifier = Modifier.testTag("lock_sign_out_btn")
+            ) {
+                Text("Switch Account / Sign Out", color = Color(0xFF94A3B8), fontSize = 13.sp)
+            }
+        }
+    }
+
+    if (showForgotDialog) {
+        ForgotPasswordDialog(
+            viewModel = viewModel,
+            initialEmail = currentUser?.email ?: "",
+            onDismiss = { showForgotDialog = false }
+        )
     }
 }
 

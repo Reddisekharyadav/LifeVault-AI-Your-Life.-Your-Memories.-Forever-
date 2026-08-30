@@ -3,17 +3,30 @@ package com.example.data.repository
 import com.example.data.db.MemoryDao
 import com.example.data.model.LocalMemory
 import com.example.data.model.LocalRelationship
+import com.example.data.model.LocalUser
 import com.example.data.api.GeminiClient
 import kotlinx.coroutines.flow.Flow
 
 class MemoryRepository(private val memoryDao: MemoryDao) {
 
     val allMemories: Flow<List<LocalMemory>> = memoryDao.getAllMemoriesFlow()
-    val pinnedMemories: Flow<List<LocalMemory>> = memoryDao.getPinnedMemoriesFlow()
     val allRelationships: Flow<List<LocalRelationship>> = memoryDao.getAllRelationshipsFlow()
+    val allUsers: Flow<List<LocalUser>> = memoryDao.getAllUsersFlow()
 
-    fun getMemoriesByType(type: String): Flow<List<LocalMemory>> {
-        return memoryDao.getMemoriesByTypeFlow(type)
+    fun getMemoriesForUser(userEmail: String): Flow<List<LocalMemory>> {
+        return memoryDao.getMemoriesForUserFlow(userEmail)
+    }
+
+    fun getRelationshipsForUser(userEmail: String): Flow<List<LocalRelationship>> {
+        return memoryDao.getRelationshipsForUserFlow(userEmail)
+    }
+
+    fun getPinnedMemoriesForUser(userEmail: String): Flow<List<LocalMemory>> {
+        return memoryDao.getPinnedMemoriesForUserFlow(userEmail)
+    }
+
+    fun getMemoriesByTypeForUser(userEmail: String, type: String): Flow<List<LocalMemory>> {
+        return memoryDao.getMemoriesByTypeForUserFlow(userEmail, type)
     }
 
     suspend fun getMemoryById(id: Long): LocalMemory? {
@@ -36,6 +49,18 @@ class MemoryRepository(private val memoryDao: MemoryDao) {
         memoryDao.deleteRelationship(relationship)
     }
 
+    suspend fun getUserByEmail(email: String): LocalUser? {
+        return memoryDao.getUserByEmail(email)
+    }
+
+    suspend fun insertUser(user: LocalUser) {
+        memoryDao.insertUser(user)
+    }
+
+    suspend fun deleteUser(user: LocalUser) {
+        memoryDao.deleteUser(user)
+    }
+
     /**
      * Leverage GeminiClient for generating AI stories, summaries, gratitude maps, and dream interpretations.
      */
@@ -43,3 +68,4 @@ class MemoryRepository(private val memoryDao: MemoryDao) {
         return GeminiClient.generateContent(prompt)
     }
 }
+

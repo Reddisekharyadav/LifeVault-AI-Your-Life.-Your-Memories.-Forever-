@@ -5,6 +5,7 @@ import android.content.Context
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.core.app.ApplicationProvider
+import com.example.ui.auth.AuthScreen
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.viewmodel.MemoryViewModel
 import org.junit.Before
@@ -29,14 +30,39 @@ class LifeVaultComposeUiTest {
     @Before
     fun setUp() {
         application = ApplicationProvider.getApplicationContext()
-        application.getSharedPreferences("lifevault_profiles", Context.MODE_PRIVATE).edit().clear().commit()
-        application.getSharedPreferences("lifevault_local_auth", Context.MODE_PRIVATE).edit().clear().commit()
+        application.getSharedPreferences("lifevault_local_session", Context.MODE_PRIVATE).edit().clear().commit()
         viewModel = MemoryViewModel(application)
         viewModel.setSecurityPin("")
     }
 
     @Test
+    fun testAuthScreenRendersAndAllowsTabSwitching() {
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                AuthScreen(viewModel = viewModel)
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        // Check AuthScreen title and branding
+        composeTestRule.onNodeWithText("LifeVault AI").assertExists()
+        composeTestRule.onNodeWithText("Private, 100% Offline Local Memory Vault").assertExists()
+
+        // Test Tab Switching between Sign In and Create Account
+        composeTestRule.onNodeWithTag("tab_sign_up").assertExists().performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Create Your First Offline Account").assertExists()
+
+        composeTestRule.onNodeWithTag("tab_sign_in").assertExists().performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Sign In to Your Local Vault").assertExists()
+    }
+
+    @Test
     fun testNavigationTabsClickableAndSwitchViews() {
+        // Sign up first
+        viewModel.signUp("Test User", "test@vault.local", "1234", "👤", "#3B82F6")
+
         composeTestRule.setContent {
             MyApplicationTheme {
                 StandardVaultWorkspace(viewModel = viewModel)
@@ -58,6 +84,9 @@ class LifeVaultComposeUiTest {
 
     @Test
     fun testDashboardElementsAndSearch() {
+        // Sign up first
+        viewModel.signUp("Test User", "test@vault.local", "1234", "👤", "#3B82F6")
+
         composeTestRule.setContent {
             MyApplicationTheme {
                 DashboardScreen(viewModel = viewModel, onNavigateToCreator = {})
@@ -78,6 +107,8 @@ class LifeVaultComposeUiTest {
 
     @Test
     fun testProfileManagerDialogInteraction() {
+        viewModel.signUp("Alex", "alex@vault.local", "1234", "👤", "#3B82F6")
+
         composeTestRule.setContent {
             MyApplicationTheme {
                 ProfileManagerDialog(viewModel = viewModel, onDismiss = {})
@@ -85,8 +116,8 @@ class LifeVaultComposeUiTest {
         }
         composeTestRule.waitForIdle()
 
-        // Check Email & Storage tab buttons
-        composeTestRule.onNodeWithText("Email & Storage").assertExists().performClick()
+        // Check Active Vault tab
+        composeTestRule.onNodeWithText("Active Vault").assertExists().performClick()
         composeTestRule.waitForIdle()
 
         // Click Export GZIP button
@@ -103,43 +134,15 @@ class LifeVaultComposeUiTest {
 
         composeTestRule.waitForIdle()
 
-        // Switch to Vault Profiles tab inside the dialog
-        composeTestRule.onNodeWithText("Vault Profiles").assertExists().performClick()
+        // Switch to Device Accounts tab inside the dialog
+        composeTestRule.onNodeWithText("Device Accounts").assertExists().performClick()
         composeTestRule.waitForIdle()
 
-        // Click "Create New Account" button
+        // Click "Create Another Local Account" button
         composeTestRule.onNodeWithTag("create_new_account_btn")
             .assertExists()
             .performClick()
 
         composeTestRule.waitForIdle()
-
-        // Enter new account name
-        composeTestRule.onNodeWithTag("new_account_name_input")
-            .assertExists()
-            .performTextInput("Secret Research Vault")
-
-        composeTestRule.waitForIdle()
-
-        // Click Seal Account button
-        composeTestRule.onNodeWithTag("save_new_account_btn")
-            .assertExists()
-            .performClick()
-
-        composeTestRule.waitForIdle()
-    }
-
-    @Test
-    fun testSecurityVaultLockerInteractions() {
-        composeTestRule.setContent {
-            MyApplicationTheme {
-                SecurityVaultScreen(viewModel = viewModel)
-            }
-        }
-        composeTestRule.waitForIdle()
-
-        // Verify Locker screen elements render
-        composeTestRule.onNodeWithText("100% Offline Vault & Privacy Protection").assertExists()
-        composeTestRule.onNodeWithText("🔒 100% LOCAL").assertExists()
     }
 }

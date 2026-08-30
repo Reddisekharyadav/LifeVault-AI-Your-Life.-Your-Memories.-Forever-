@@ -8,6 +8,7 @@ import com.squareup.moshi.JsonClass
 @Entity(tableName = "memories")
 data class LocalMemory(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val userEmail: String = "",              // Partition key for current logged-in user
     val type: String,                       // "JOURNAL", "VOICE", "DREAM", "ACADEMIC", "TRAVEL", "GRATITUDE", "CAPSULE", "DRAWING"
     val title: String,
     val content: String,                    // Text or key description

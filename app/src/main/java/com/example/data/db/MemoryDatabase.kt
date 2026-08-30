@@ -6,8 +6,9 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import com.example.data.model.LocalMemory
 import com.example.data.model.LocalRelationship
+import com.example.data.model.LocalUser
 
-@Database(entities = [LocalMemory::class, LocalRelationship::class], version = 1, exportSchema = false)
+@Database(entities = [LocalMemory::class, LocalRelationship::class, LocalUser::class], version = 2, exportSchema = false)
 abstract class MemoryDatabase : RoomDatabase() {
     abstract fun memoryDao(): MemoryDao
 

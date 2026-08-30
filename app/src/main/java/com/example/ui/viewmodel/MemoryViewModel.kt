@@ -6,54 +6,68 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.db.MemoryDatabase
 import com.example.data.model.LocalMemory
 import com.example.data.model.LocalRelationship
+import com.example.data.model.LocalUser
 import com.example.data.repository.MemoryRepository
 import com.example.data.storage.CompressedStorageManager
 import com.example.data.storage.CompressionResult
 import com.example.data.storage.StorageTelemetry
+import com.example.data.storage.VoiceStorageManager
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class MemoryViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository: MemoryRepository
+    private val sessionPrefs = application.getSharedPreferences("lifevault_local_session", android.content.Context.MODE_PRIVATE)
+
+    // User Authentication State (100% Offline, on-device local storage)
+    val localUserEmail = MutableStateFlow(sessionPrefs.getString("logged_in_email", "") ?: "")
+    val isUserLoggedIn = MutableStateFlow(sessionPrefs.getBoolean("is_logged_in", false))
+    val currentUser = MutableStateFlow<LocalUser?>(null)
+    val registeredUsers: StateFlow<List<LocalUser>>
+
+    // User-specific scoped memories and relationships
     val allMemories: StateFlow<List<LocalMemory>>
     val allRelationships: StateFlow<List<LocalRelationship>>
+    val pinnedMemories: StateFlow<List<LocalMemory>>
 
-    // Navigation and screen management lists
+    // Search and filters
     val isKidsMode = MutableStateFlow(false)
     val searchQuery = MutableStateFlow("")
-    
+
     // Security & Encrypted PIN Lock configuration
-    val securityPin = MutableStateFlow("") // empty means no PIN configured
+    val securityPin = MutableStateFlow("")
     val isScreenLocked = MutableStateFlow(false)
     val inputPinAttempt = MutableStateFlow("")
 
-    // Single Master Email Local Authentication (100% Offline, Zero Cloud)
-    private val authPrefs = application.getSharedPreferences("lifevault_local_auth", android.content.Context.MODE_PRIVATE)
-    val localUserEmail = MutableStateFlow(authPrefs.getString("master_email", "maruganireddisekhar5@gmail.com") ?: "maruganireddisekhar5@gmail.com")
-    val isEmailAuthenticated = MutableStateFlow(authPrefs.getBoolean("is_authenticated", true))
-    val lastBackupTimestamp = MutableStateFlow(authPrefs.getLong("last_backup_time", 0L))
+    val lastBackupTimestamp = MutableStateFlow(sessionPrefs.getLong("last_backup_time", 0L))
 
-    // Simulated Voice-First Experience State Machine
+    // Real On-Device Voice Recording & Native Speech-to-Text State
+    val voiceStorageManager = VoiceStorageManager(application)
     val isRecording = MutableStateFlow(false)
     val isRecordingPaused = MutableStateFlow(false)
     val recordingDuration = MutableStateFlow(0)
+    val liveTranscript = MutableStateFlow("")
+    val speechStatus = MutableStateFlow("Ready to record voice")
+    val audioRmsLevel = MutableStateFlow(0f)
+    val currentAudioFileName = MutableStateFlow("")
     private var recordingJob: Job? = null
+
+    // Audio Playback in Dashboard Feed
+    val playingMemoryId = MutableStateFlow<Long?>(null)
+    val audioProgress = MutableStateFlow(0f)
+    val audioPlaybackStatus = MutableStateFlow("")
 
     // Dynamic story generation buffers
     val isGeneratingStory = MutableStateFlow(false)
     val currentGeneratedStory = MutableStateFlow("")
 
-    // Local Mock Profiles & Login for Offline Mode
-    val guestUser = MutableStateFlow("Guest Explorer")
     val isOfflineModeGuaranteed = MutableStateFlow(true)
-
-    // Expanded Multi-profile Persistent Offline Registry
-    private val prefs = application.getSharedPreferences("lifevault_profiles", android.content.Context.MODE_PRIVATE)
-    val profilesList = MutableStateFlow<List<VaultProfile>>(emptyList())
-    val activeProfile = MutableStateFlow<VaultProfile?>(null)
+    private val localUsersCache = java.util.concurrent.ConcurrentHashMap<String, LocalUser>()
 
     // Storage and Compression telemetry
     val storageTelemetry = MutableStateFlow(
@@ -69,19 +83,70 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
     init {
         val db = MemoryDatabase.getDatabase(application)
         repository = MemoryRepository(db.memoryDao())
-        
-        allMemories = repository.allMemories.stateIn(
+
+        registeredUsers = repository.allUsers.stateIn(
             scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000),
+            started = SharingStarted.Eagerly,
             initialValue = emptyList()
         )
-        
-        allRelationships = repository.allRelationships.stateIn(
+
+        // Reactive stream of memories strictly scoped to logged-in user
+        allMemories = localUserEmail.flatMapLatest { email ->
+            val cleanEmail = email.trim().lowercase()
+            if (cleanEmail.isBlank()) {
+                repository.allMemories
+            } else {
+                repository.getMemoriesForUser(cleanEmail)
+            }
+        }.stateIn(
             scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000),
+            started = SharingStarted.Eagerly,
             initialValue = emptyList()
         )
-        loadProfiles()
+
+        // Reactive stream of relationships strictly scoped to logged-in user
+        allRelationships = localUserEmail.flatMapLatest { email ->
+            val cleanEmail = email.trim().lowercase()
+            if (cleanEmail.isBlank()) {
+                repository.allRelationships
+            } else {
+                repository.getRelationshipsForUser(cleanEmail)
+            }
+        }.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = emptyList()
+        )
+
+        pinnedMemories = localUserEmail.flatMapLatest { email ->
+            val cleanEmail = email.trim().lowercase()
+            if (cleanEmail.isBlank()) {
+                flowOf(emptyList())
+            } else {
+                repository.getPinnedMemoriesForUser(cleanEmail)
+            }
+        }.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = emptyList()
+        )
+
+        // Load active user info
+        viewModelScope.launch {
+            val savedEmail = localUserEmail.value
+            if (savedEmail.isNotBlank() && isUserLoggedIn.value) {
+                val user = repository.getUserByEmail(savedEmail)
+                if (user != null) {
+                    localUsersCache[user.email] = user
+                    currentUser.value = user
+                    securityPin.value = user.pinOrPassword
+                    isScreenLocked.value = false
+                } else {
+                    // Reset if user not found in local DB
+                    isUserLoggedIn.value = false
+                }
+            }
+        }
 
         // Observe and update storage telemetry
         viewModelScope.launch {
@@ -93,29 +158,149 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // Local single-email account binding
-    fun loginWithEmail(email: String, pin: String): Boolean {
-        val trimmed = email.trim()
-        if (trimmed.isBlank() || !trimmed.contains("@")) return false
-        localUserEmail.value = trimmed
-        if (pin.isNotBlank()) {
-            setSecurityPin(pin)
+    // ==========================================
+    // LOCAL USER AUTHENTICATION (SIGN UP & LOGIN)
+    // ==========================================
+
+    fun signUp(
+        fullName: String,
+        email: String,
+        pinOrPass: String,
+        avatarEmoji: String = "👤",
+        colorHex: String = "#3B82F6"
+    ): Pair<Boolean, String> {
+        val trimmedEmail = email.trim().lowercase()
+        val trimmedName = fullName.trim()
+        val trimmedPin = pinOrPass.trim()
+
+        if (trimmedName.isBlank()) {
+            return Pair(false, "Please enter your full name.")
         }
-        isEmailAuthenticated.value = true
-        authPrefs.edit()
-            .putString("master_email", trimmed)
-            .putBoolean("is_authenticated", true)
+        if (trimmedEmail.isBlank() || !trimmedEmail.contains("@")) {
+            return Pair(false, "Please enter a valid email address.")
+        }
+        if (trimmedPin.length < 4) {
+            return Pair(false, "Security PIN/Password must be at least 4 digits.")
+        }
+
+        val newUser = LocalUser(
+            email = trimmedEmail,
+            fullName = trimmedName,
+            pinOrPassword = trimmedPin,
+            avatarEmoji = avatarEmoji,
+            colorHex = colorHex
+        )
+
+        localUsersCache[trimmedEmail] = newUser
+        currentUser.value = newUser
+        localUserEmail.value = trimmedEmail
+        securityPin.value = trimmedPin
+        isScreenLocked.value = false
+        isUserLoggedIn.value = true
+
+        sessionPrefs.edit()
+            .putString("logged_in_email", trimmedEmail)
+            .putBoolean("is_logged_in", true)
             .apply()
-        guestUser.value = trimmed.substringBefore("@")
-        return true
+
+        viewModelScope.launch {
+            repository.insertUser(newUser)
+        }
+
+        return Pair(true, "Account created successfully!")
     }
 
-    fun logoutEmailAccount() {
-        isEmailAuthenticated.value = false
-        authPrefs.edit().putBoolean("is_authenticated", false).apply()
+    fun login(email: String, pinOrPass: String): Pair<Boolean, String> {
+        val trimmedEmail = email.trim().lowercase()
+        val trimmedPin = pinOrPass.trim()
+
+        if (trimmedEmail.isBlank()) return Pair(false, "Please enter your email.")
+        if (trimmedPin.isBlank()) return Pair(false, "Please enter your PIN / Password.")
+
+        val existing = localUsersCache[trimmedEmail]
+            ?: registeredUsers.value.find { it.email == trimmedEmail }
+            ?: (if (currentUser.value?.email == trimmedEmail) currentUser.value else null)
+
+        if (existing != null) {
+            if (existing.pinOrPassword != trimmedPin) {
+                return Pair(false, "Incorrect Security PIN/Password. Please try again.")
+            }
+            currentUser.value = existing
+            localUserEmail.value = existing.email
+            securityPin.value = existing.pinOrPassword
+            isScreenLocked.value = false
+            isUserLoggedIn.value = true
+
+            sessionPrefs.edit()
+                .putString("logged_in_email", existing.email)
+                .putBoolean("is_logged_in", true)
+                .apply()
+            return Pair(true, "Login successful!")
+        }
+
+        return Pair(false, "Account not found on this device. Please sign up first.")
     }
 
-    // Export local compressed vault (GZIP Base64 Archive)
+    fun switchUser(user: LocalUser) {
+        localUsersCache[user.email] = user
+        currentUser.value = user
+        localUserEmail.value = user.email
+        securityPin.value = user.pinOrPassword
+        isScreenLocked.value = false
+        isUserLoggedIn.value = true
+        sessionPrefs.edit()
+            .putString("logged_in_email", user.email)
+            .putBoolean("is_logged_in", true)
+            .apply()
+    }
+
+    fun resetPasswordOrPin(email: String, newPinOrPass: String): Pair<Boolean, String> {
+        val trimmedEmail = email.trim().lowercase()
+        val trimmedPin = newPinOrPass.trim()
+
+        if (trimmedEmail.isBlank()) return Pair(false, "Please enter your account email.")
+        if (trimmedPin.length < 4) return Pair(false, "New PIN / Password must be at least 4 characters.")
+
+        val existing = localUsersCache[trimmedEmail]
+            ?: registeredUsers.value.find { it.email.equals(trimmedEmail, ignoreCase = true) }
+            ?: (if (currentUser.value?.email.equals(trimmedEmail, ignoreCase = true)) currentUser.value else null)
+
+        if (existing != null) {
+            val updated = existing.copy(pinOrPassword = trimmedPin)
+            localUsersCache[trimmedEmail] = updated
+            currentUser.value = updated
+            localUserEmail.value = trimmedEmail
+            securityPin.value = trimmedPin
+            isScreenLocked.value = false
+            isUserLoggedIn.value = true
+
+            sessionPrefs.edit()
+                .putString("logged_in_email", trimmedEmail)
+                .putBoolean("is_logged_in", true)
+                .apply()
+
+            viewModelScope.launch {
+                repository.insertUser(updated)
+            }
+            return Pair(true, "PIN / Password reset successfully! You are now logged in.")
+        }
+
+        return Pair(false, "No account matching '$trimmedEmail' was found on this device.")
+    }
+
+    fun logout() {
+        isUserLoggedIn.value = false
+        currentUser.value = null
+        localUserEmail.value = ""
+        securityPin.value = ""
+        isScreenLocked.value = false
+        sessionPrefs.edit()
+            .putString("logged_in_email", "")
+            .putBoolean("is_logged_in", false)
+            .apply()
+    }
+
+    // Export local compressed vault (GZIP Base64 Archive) for current user
     fun exportCompressedVault(): CompressionResult {
         val result = CompressedStorageManager.exportCompressedVault(
             email = localUserEmail.value,
@@ -124,37 +309,37 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
         )
         val now = System.currentTimeMillis()
         lastBackupTimestamp.value = now
-        authPrefs.edit().putLong("last_backup_time", now).apply()
+        sessionPrefs.edit().putLong("last_backup_time", now).apply()
         return result
     }
 
-    // Restore from compressed archive
+    // Restore from compressed archive into current user's vault
     fun importCompressedVault(archiveData: String): Pair<Boolean, String> {
         val payload = CompressedStorageManager.importCompressedVault(archiveData)
             ?: return Pair(false, "Invalid or corrupted compressed archive string!")
 
+        val currentEmail = localUserEmail.value
         viewModelScope.launch {
             payload.memories.forEach { memory ->
-                // Avoid exact duplicate timestamp+title
                 val exists = allMemories.value.any { it.title == memory.title && it.timestamp == memory.timestamp }
                 if (!exists) {
-                    repository.insertMemory(memory.copy(id = 0))
+                    repository.insertMemory(memory.copy(id = 0, userEmail = currentEmail))
                 }
             }
             payload.relationships.forEach { rel ->
                 val exists = allRelationships.value.any { it.name.equals(rel.name, ignoreCase = true) }
                 if (!exists) {
-                    repository.insertRelationship(rel.copy(id = 0))
+                    repository.insertRelationship(rel.copy(id = 0, userEmail = currentEmail))
                 }
             }
         }
-        return Pair(true, "Successfully restored ${payload.memories.size} memories & ${payload.relationships.size} relationships!")
+        return Pair(true, "Successfully restored ${payload.memories.size} memories & ${payload.relationships.size} relationships into your local vault!")
     }
 
     // Compact and optimize local SQLite database
     fun compactLocalDatabase(): String {
         val telemetry = storageTelemetry.value
-        return "Database compacted & indexed! Footprint reduced to ${CompressedStorageManager.formatBytes(telemetry.compressedSizeBytes)} (${telemetry.compressionRatioText} saved)."
+        return "Database compacted & indexed! Local footprint reduced to ${CompressedStorageManager.formatBytes(telemetry.compressedSizeBytes)} (${telemetry.compressionRatioText} saved)."
     }
 
     fun toggleKidsMode() {
@@ -169,10 +354,20 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
     fun setSecurityPin(pin: String) {
         securityPin.value = pin
         isScreenLocked.value = pin.isNotEmpty()
+        viewModelScope.launch {
+            val user = currentUser.value
+            if (user != null) {
+                val updated = user.copy(pinOrPassword = pin)
+                repository.insertUser(updated)
+                currentUser.value = updated
+            }
+        }
     }
 
     fun attemptUnlock(pin: String): Boolean {
-        return if (pin == securityPin.value) {
+        val trimmed = pin.trim()
+        val expected = securityPin.value.trim().ifBlank { currentUser.value?.pinOrPassword?.trim() ?: "" }
+        return if (expected.isEmpty() || trimmed == expected) {
             isScreenLocked.value = false
             inputPinAttempt.value = ""
             true
@@ -187,12 +382,40 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // Voice first recording simulator
+    // Real On-Device Voice Recording & Native Speech-to-Text
     fun startRecording() {
         isRecording.value = true
         isRecordingPaused.value = false
         recordingDuration.value = 0
+        liveTranscript.value = ""
+        speechStatus.value = "Listening... Speak clearly into microphone"
+        audioRmsLevel.value = 0.1f
+
+        val recordedFileName = voiceStorageManager.startRecording(object : VoiceStorageManager.VoiceRecordingListener {
+            override fun onRmsChanged(rmsDb: Float) {
+                audioRmsLevel.value = rmsDb
+            }
+
+            override fun onLiveTranscript(text: String, isFinal: Boolean) {
+                if (text.isNotBlank()) {
+                    liveTranscript.value = text
+                }
+            }
+
+            override fun onSpeechStatus(status: String) {
+                speechStatus.value = status
+            }
+
+            override fun onError(errorMessage: String) {
+                speechStatus.value = errorMessage
+            }
+        })
+        currentAudioFileName.value = recordedFileName
         startTimer()
+    }
+
+    fun updateLiveTranscript(text: String) {
+        liveTranscript.value = text
     }
 
     fun pauseRecording() {
@@ -215,28 +438,46 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun stopAndSaveVoiceRecording(title: String, mood: String) {
+    fun stopAndSaveVoiceRecording(title: String = "", mood: String = "CALM") {
         val duration = recordingDuration.value
+        val internalFileName = voiceStorageManager.stopRecording().ifBlank { currentAudioFileName.value }
         isRecording.value = false
         isRecordingPaused.value = false
         recordingJob?.cancel()
 
+        val rawTranscript = liveTranscript.value.trim()
+        val transcript = if (rawTranscript.isNotBlank()) {
+            rawTranscript
+        } else {
+            "Voice journal recording (${duration}s)"
+        }
+
+        val currentEmail = localUserEmail.value.trim().lowercase().ifBlank { currentUser.value?.email?.trim()?.lowercase() ?: "" }
         viewModelScope.launch {
-            val spokenText = "Spontaneous voice narration recording for $duration seconds regarding daily events and memories."
-            val summaryPrompt = "Extract a summary and title for this spoken transcript: $spokenText"
+            val summaryPrompt = "Extract a summary and key emotion for this spoken transcript: $transcript"
             val aiSummaryText = repository.getAISummary(summaryPrompt)
-            
+
+            val autoTitle = if (title.isNotBlank()) {
+                title
+            } else if (rawTranscript.isNotBlank()) {
+                if (rawTranscript.length > 28) rawTranscript.take(28) + "..." else rawTranscript
+            } else {
+                "Voice Memoir #${(100..999).random()}"
+            }
+
             val voiceMemory = LocalMemory(
+                userEmail = currentEmail,
                 type = "VOICE",
-                title = title.ifBlank { "Voice Memory #${(100..999).random()}" },
-                content = spokenText,
+                title = autoTitle,
+                content = transcript,
                 mood = mood,
-                audioPath = "simulated_local_audio_${System.currentTimeMillis()}.mp3",
-                voiceTranscript = spokenText,
+                audioPath = internalFileName,
+                voiceTranscript = transcript,
                 aiSummary = aiSummaryText,
                 isKidsMode = isKidsMode.value
             )
             repository.insertMemory(voiceMemory)
+            speechStatus.value = "Voice memo saved to local phone storage!"
         }
     }
 
@@ -244,9 +485,50 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
         isRecording.value = false
         isRecordingPaused.value = false
         recordingJob?.cancel()
+        voiceStorageManager.cancelRecording()
+        liveTranscript.value = ""
+        speechStatus.value = "Recording canceled"
+        audioRmsLevel.value = 0f
     }
 
-    // Quick add generic memory
+    // Audio Playback for Voice Memories
+    fun playMemoryAudio(memory: LocalMemory) {
+        if (playingMemoryId.value == memory.id) {
+            stopAudioPlayback()
+            return
+        }
+        stopAudioPlayback()
+
+        if (memory.audioPath.isBlank()) {
+            audioPlaybackStatus.value = "No audio file recorded for this memory."
+            return
+        }
+
+        playingMemoryId.value = memory.id
+        audioProgress.value = 0f
+        voiceStorageManager.playAudio(
+            fileName = memory.audioPath,
+            onProgress = { progress ->
+                audioProgress.value = progress
+            },
+            onComplete = {
+                playingMemoryId.value = null
+                audioProgress.value = 0f
+            },
+            onError = { err ->
+                playingMemoryId.value = null
+                audioPlaybackStatus.value = err
+            }
+        )
+    }
+
+    fun stopAudioPlayback() {
+        playingMemoryId.value = null
+        audioProgress.value = 0f
+        voiceStorageManager.stopPlayback()
+    }
+
+    // Add generic memory for current user
     fun addMemory(
         type: String,
         title: String,
@@ -265,6 +547,7 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
         tripName: String = "",
         familyAlbum: String = ""
     ) {
+        val currentEmail = localUserEmail.value.trim().lowercase().ifBlank { currentUser.value?.email?.trim()?.lowercase() ?: "" }
         viewModelScope.launch {
             val unlockTime = if (type == "CAPSULE" && capsuleUnlockInDays > 0) {
                 System.currentTimeMillis() + (capsuleUnlockInDays.toLong() * 24 * 60 * 60 * 1000)
@@ -272,7 +555,6 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
                 0L
             }
 
-            // Extract gratitude summary if appropriate
             val summaryText = if (type == "GRATITUDE" || content.lowercase().contains("grateful")) {
                 repository.getAISummary("Summarize what this person is grateful for: $content")
             } else if (type == "DREAM") {
@@ -282,6 +564,7 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
             }
 
             val newMemory = LocalMemory(
+                userEmail = currentEmail,
                 type = type,
                 title = title.ifBlank { "Memoir #${(100..999).random()}" },
                 content = content,
@@ -308,6 +591,7 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
                 if (!alreadyExists) {
                     repository.insertRelationship(
                         LocalRelationship(
+                            userEmail = currentEmail,
                             name = pName,
                             relationType = "FRIEND"
                         )
@@ -319,6 +603,12 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
 
     // Delete Memory
     fun deleteMemory(memory: LocalMemory) {
+        if (playingMemoryId.value == memory.id) {
+            stopAudioPlayback()
+        }
+        if (memory.audioPath.isNotBlank()) {
+            voiceStorageManager.deleteAudioFile(memory.audioPath)
+        }
         viewModelScope.launch {
             repository.deleteMemory(memory)
         }
@@ -347,7 +637,6 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
             currentGeneratedStory.value = storyResult
             isGeneratingStory.value = false
 
-            // Save the generated story inside the memory
             val updated = memory.copy(
                 aiSummary = storyResult,
                 aiStoryType = storyType
@@ -358,9 +647,11 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
 
     // Insert relationship
     fun addRelationship(name: String, relationType: String, notes: String = "") {
+        val currentEmail = localUserEmail.value
         viewModelScope.launch {
             repository.insertRelationship(
                 LocalRelationship(
+                    userEmail = currentEmail,
                     name = name,
                     relationType = relationType,
                     notes = notes
@@ -375,156 +666,14 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun loadProfiles() {
-        val raw = prefs.getString("profiles_raw", "") ?: ""
-        if (raw.isBlank()) {
-            val defaultGuest = VaultProfile("Guest Explorer", "", "👤", "#3B82F6")
-            profilesList.value = listOf(defaultGuest)
-            activeProfile.value = defaultGuest
-            guestUser.value = defaultGuest.name
-            securityPin.value = ""
-            isScreenLocked.value = false
-        } else {
-            val list = raw.split("\n").filter { it.isNotBlank() }.mapNotNull { line ->
-                val parts = line.split("|")
-                if (parts.size >= 4) {
-                    VaultProfile(parts[0], parts[1], parts[2], parts[3])
-                } else {
-                    null
-                }
-            }
-            profilesList.value = list
-            val currentActiveName = prefs.getString("active_profile_name", "Guest Explorer") ?: "Guest Explorer"
-            val active = list.find { it.name == currentActiveName } ?: list.firstOrNull() ?: VaultProfile("Guest Explorer", "", "👤", "#3B82F6")
-            activeProfile.value = active
-            guestUser.value = active.name
-            securityPin.value = active.securityPin
-            isScreenLocked.value = active.securityPin.isNotEmpty()
-        }
-    }
-
-    fun saveProfiles(list: List<VaultProfile>) {
-        val raw = list.joinToString("\n") { "${it.name}|${it.securityPin}|${it.avatarEmoji}|${it.colorHex}" }
-        prefs.edit().putString("profiles_raw", raw).apply()
-        profilesList.value = list
-    }
-
-    fun createProfile(name: String, pin: String, emoji: String, colorHex: String): Boolean {
-        if (name.isBlank()) return false
-        val currentList = profilesList.value.toMutableList()
-        if (currentList.any { it.name.equals(name, ignoreCase = true) }) {
-            return false
-        }
-        val newProfile = VaultProfile(name, pin, emoji, colorHex)
-        currentList.add(newProfile)
-        saveProfiles(currentList)
-        switchProfile(newProfile)
-        return true
-    }
-
-    fun deleteProfile(profile: VaultProfile) {
-        val currentList = profilesList.value.toMutableList()
-        if (currentList.size <= 1) return
-        currentList.remove(profile)
-        saveProfiles(currentList)
-        if (activeProfile.value?.name == profile.name) {
-            switchProfile(currentList.first())
-        }
-    }
-
-    fun switchProfile(profile: VaultProfile) {
-        activeProfile.value = profile
-        guestUser.value = profile.name
-        securityPin.value = profile.securityPin
-        prefs.edit().putString("active_profile_name", profile.name).apply()
-        isScreenLocked.value = profile.securityPin.isNotEmpty()
-    }
-
     fun toggleOfflinePrivacyLock() {
         val current = isOfflineModeGuaranteed.value
         isOfflineModeGuaranteed.value = !current
     }
 
-    val sampleDatabaseSetUp = MutableStateFlow(false)
-
-    // Seed sample data for stunning visual presentation straight away if empty
-    fun seedSampleDataIfEmpty() {
-        if (allMemories.value.isNotEmpty() || sampleDatabaseSetUp.value) return
-        sampleDatabaseSetUp.value = true
-        viewModelScope.launch {
-            // Seed multiple distinct categories as requested
-            addMemory(
-                type = "JOURNAL",
-                title = "Gazing at the Milky Way",
-                content = "Set up a telescope in the backyard tonight. The sky was unbelievably clear, revealing a luminous dusting of the Milky Way galaxy. Felt incredibly small yet connected to everything.",
-                mood = "EXCITED",
-                location = "Backyard Observatory",
-                tags = "Cosmic, Skygazing, Reflection",
-                people = "Elena, Marcus",
-                isPinned = true
-            )
-            addMemory(
-                type = "DREAM",
-                title = "Flying above a Neon Metropolis",
-                content = "I was soaring high above a futuristic glowing city with flying fish. The wind felt warm, and everything looked like an interactive neon synth canvas.",
-                mood = "CALM",
-                location = "Dreamland",
-                tags = "Prophetic, Flying"
-            )
-            addMemory(
-                type = "GRATITUDE",
-                title = "Morning Coffee & Warm Sun",
-                content = "Grateful for the silent hours before everyone wakes up, the rich smell of roasted coffee beans, and the bright yellow beams playing on the wooden floor.",
-                mood = "HAPPY",
-                location = "Kitchen Corner",
-                tags = "Gratitude, Mindful"
-            )
-            addMemory(
-                type = "ACADEMIC",
-                title = "Android Dev Certification Exam",
-                content = "Passed the Advanced Android Developer assessment with flying colors! All those late-night Jetpack Compose struggles fully paid off.",
-                mood = "EXCITED",
-                academicCategory = "CERTIFICATE",
-                academicGrade = "Grade: A+",
-                tags = "Success, Coding, Career"
-            )
-            addMemory(
-                type = "TRAVEL",
-                title = "Biking Through Kyoto",
-                content = "Rented bamboo bikes and rode around the ancient temples of Kyoto. We ate sweet matcha mochi and recorded beautiful sketches of Arashiyama.",
-                mood = "HAPPY",
-                location = "Kyoto, Japan",
-                tripName = "Japan Odyssey",
-                tags = "Travel, Adventure"
-            )
-            addMemory(
-                type = "CAPSULE",
-                title = "A Letter to My Future Self",
-                content = "Writing this down in 2026. Remember to stay focused, breath deeply during high stakes, and never stop building local-first tools!",
-                mood = "CALM",
-                capsuleUnlockInDays = 30 // locked capsule
-            )
-            addMemory(
-                type = "DRAWING",
-                title = "A Cute Happy Dino",
-                content = "Drawn on visual canvas in Kids Mode.",
-                mood = "HAPPY",
-                isKids = true,
-                kidsStickers = "Star, Balloon, Dinosaur"
-            )
-
-            // Seed some relationships
-            addRelationship("Elena", "FAMILY", "My supportive sister")
-            addRelationship("Marcus", "FRIEND", "College roommate & stargazing buddy")
-            addRelationship("Professor Alaric", "CLASSMATE", "Android mentor")
-        }
+    override fun onCleared() {
+        super.onCleared()
+        stopAudioPlayback()
+        voiceStorageManager.cancelRecording()
     }
 }
-
-// Memory Vault Profile registry model
-data class VaultProfile(
-    val name: String,
-    val securityPin: String = "",
-    val avatarEmoji: String = "👤",
-    val colorHex: String = "#3B82F6"
-)

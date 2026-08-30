@@ -3,9 +3,7 @@ package com.example
 import android.app.Application
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
-import com.example.data.model.LocalMemory
 import com.example.ui.viewmodel.MemoryViewModel
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
@@ -25,31 +23,29 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun testMultiProfileAccountCreationAndSwitching() {
+    fun testUserSignUpLoginAndLockFlow() {
         val application = ApplicationProvider.getApplicationContext<Application>()
         val viewModel = MemoryViewModel(application)
 
-        // Ensure default Guest Profile is configured
-        runBlocking {
-            val profiles = viewModel.profilesList.value
-            assertTrue(profiles.any { it.name == "Guest Explorer" })
-        }
-
-        // Create a new customized secure account
-        val newlyCreated = viewModel.createProfile(
-            name = "John Doe Private Vault",
-            pin = "4321",
-            emoji = "💎",
+        // Create a new customized secure local account
+        val (success, msg) = viewModel.signUp(
+            fullName = "John Doe",
+            email = "john.doe@vault.local",
+            pinOrPass = "4321",
+            avatarEmoji = "💎",
             colorHex = "#8B5CF6"
         )
-        assertTrue(newlyCreated)
+        assertTrue(success)
 
-        // Verify John Doe is now active and the session screen lock is armed
-        val activeProfile = viewModel.activeProfile.value
-        assertNotNull(activeProfile)
-        assertEquals("John Doe Private Vault", activeProfile?.name)
-        assertEquals("4321", activeProfile?.securityPin)
-        assertEquals("💎", activeProfile?.avatarEmoji)
+        // Verify John Doe is now active
+        val currentUser = viewModel.currentUser.value
+        assertNotNull(currentUser)
+        assertEquals("John Doe", currentUser?.fullName)
+        assertEquals("4321", currentUser?.pinOrPassword)
+        assertEquals("💎", currentUser?.avatarEmoji)
+
+        // Lock screen and verify PIN unlock
+        viewModel.lockScreen()
         assertTrue(viewModel.isScreenLocked.value)
 
         // Verify PIN unlock is responsive
@@ -67,6 +63,8 @@ class ExampleRobolectricTest {
         val application = ApplicationProvider.getApplicationContext<Application>()
         val viewModel = MemoryViewModel(application)
 
+        viewModel.signUp("Test User", "test@vault.local", "1234", "👤", "#3B82F6")
+
         viewModel.addMemory(
             type = "GRATITUDE",
             title = "A Magical Sunset",
@@ -76,12 +74,8 @@ class ExampleRobolectricTest {
             tags = "Sunset, Gratitude, Serene"
         )
 
-        // Verify the added memory exists in memories stream
-        runBlocking {
-            // Seeding sample data may populate default values, let's look for our target title
-            val list = viewModel.allMemories.value
-            // Since databases might run asynchronously in Unit tests, we check value or state
-            assertNotNull(list)
-        }
+        // Verify memories stream is non-null
+        val list = viewModel.allMemories.value
+        assertNotNull(list)
     }
 }

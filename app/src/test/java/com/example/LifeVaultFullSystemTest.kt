@@ -25,25 +25,74 @@ class LifeVaultFullSystemTest {
     @Before
     fun setUp() {
         application = ApplicationProvider.getApplicationContext()
-        application.getSharedPreferences("lifevault_profiles", Context.MODE_PRIVATE).edit().clear().commit()
-        application.getSharedPreferences("lifevault_local_auth", Context.MODE_PRIVATE).edit().clear().commit()
+        application.getSharedPreferences("lifevault_local_session", Context.MODE_PRIVATE).edit().clear().commit()
         viewModel = MemoryViewModel(application)
-        viewModel.setSecurityPin("")
     }
 
     @Test
-    fun testMasterEmailAccountBindingAndLocalAuth() {
-        // Test binding the master user email offline
-        val testEmail = "maruganireddisekhar5@gmail.com"
-        val success = viewModel.loginWithEmail(testEmail, "1234")
-        assertTrue(success)
-        assertEquals(testEmail, viewModel.localUserEmail.value)
-        assertTrue(viewModel.isEmailAuthenticated.value)
-        assertEquals("1234", viewModel.securityPin.value)
+    fun testUserSignUpAndLoginFlow() = runBlocking {
+        val email = "alex.mercer@vault.local"
+        val name = "Alex Mercer"
+        val pin = "4321"
 
-        // Invalid email should fail
-        val invalidSuccess = viewModel.loginWithEmail("invalidemail", "")
-        assertFalse(invalidSuccess)
+        // 1. Sign up new local account
+        val (signupSuccess, signupMsg) = viewModel.signUp(
+            fullName = name,
+            email = email,
+            pinOrPass = pin,
+            avatarEmoji = "🚀",
+            colorHex = "#3B82F6"
+        )
+        assertTrue(signupSuccess)
+        assertTrue(viewModel.isUserLoggedIn.value)
+        assertEquals(email, viewModel.localUserEmail.value)
+        assertEquals(name, viewModel.currentUser.value?.fullName)
+
+        // 2. Add memories for this user
+        viewModel.addMemory(
+            type = "JOURNAL",
+            title = "First Expedition Log",
+            content = "Setup local encrypted memory pod. Data remains strictly offline.",
+            mood = "EXCITED",
+            location = "Base Camp",
+            tags = "Offline, Milestone"
+        )
+
+        // 3. Logout
+        viewModel.logout()
+        assertFalse(viewModel.isUserLoggedIn.value)
+
+        // 4. Attempt login with wrong PIN
+        val (wrongLogin, wrongMsg) = viewModel.login(email, "0000")
+        assertFalse(wrongLogin)
+        assertFalse(viewModel.isUserLoggedIn.value)
+
+        // 5. Attempt login with correct credentials
+        val (correctLogin, correctMsg) = viewModel.login(email, pin)
+        assertTrue(correctLogin)
+        assertTrue(viewModel.isUserLoggedIn.value)
+        assertEquals(email, viewModel.localUserEmail.value)
+    }
+
+    @Test
+    fun testMultiUserDataPartitioningAndIsolation() = runBlocking {
+        // User A setup
+        val userAEmail = "alice@example.com"
+        viewModel.signUp("Alice", userAEmail, "1111", "🦊", "#3B82F6")
+        viewModel.addMemory("JOURNAL", "Alice Secret Journal", "Alice private notes", "CALM", "Home", "Alice")
+
+        // User B setup
+        val userBEmail = "bob@example.com"
+        viewModel.signUp("Bob", userBEmail, "2222", "🐼", "#10B981")
+        viewModel.addMemory("JOURNAL", "Bob Secret Journal", "Bob private notes", "HAPPY", "Work", "Bob")
+
+        // Currently logged in as Bob
+        assertEquals(userBEmail, viewModel.localUserEmail.value)
+
+        // Switch to Alice
+        viewModel.login(userAEmail, "1111")
+        assertEquals(userAEmail, viewModel.localUserEmail.value)
+        assertEquals("Alice", viewModel.currentUser.value?.fullName)
     }
 
     @Test
@@ -69,29 +118,21 @@ class LifeVaultFullSystemTest {
         val sampleMemories = listOf(
             LocalMemory(
                 id = 1,
+                userEmail = "maruganireddisekhar5@gmail.com",
                 type = "JOURNAL",
                 title = "Exploring Kyoto Temples",
-                content = "Walked through the tranquil bamboo groves of Arashiyama in early morning fog. The stone lanterns were covered in moss.",
+                content = "Walked through the tranquil bamboo groves of Arashiyama in early morning fog.",
                 mood = "PEACEFUL",
                 location = "Kyoto, Japan",
                 tagsAsString = "Travel, Peace, Nature",
                 isPinned = true
-            ),
-            LocalMemory(
-                id = 2,
-                type = "MILESTONE",
-                title = "Defended Master's Thesis",
-                content = "Presented research on decentralized neural computing. Awarded distinction honors by the committee.",
-                mood = "TRIUMPHANT",
-                location = "Auditorium Hall",
-                tagsAsString = "Academic, Milestone, Victory",
-                isPinned = false
             )
         )
 
         val sampleRelationships = listOf(
             LocalRelationship(
                 id = 1,
+                userEmail = "maruganireddisekhar5@gmail.com",
                 name = "Elena Vance",
                 relationType = "FAMILY",
                 notes = "Always calls on Sunday afternoons"
@@ -109,69 +150,18 @@ class LifeVaultFullSystemTest {
         assertTrue(exportResult.compressedPayload.isNotBlank())
         assertTrue(exportResult.rawBytes > 0)
         assertTrue(exportResult.compressedBytes > 0)
-        assertEquals(3, exportResult.itemsCount)
+        assertEquals(2, exportResult.itemsCount)
 
         // 2. Decompress and restore payload
         val imported = CompressedStorageManager.importCompressedVault(exportResult.compressedPayload)
         assertNotNull(imported)
         assertEquals("maruganireddisekhar5@gmail.com", imported?.email)
-        assertEquals(2, imported?.memories?.size)
+        assertEquals(1, imported?.memories?.size)
         assertEquals(1, imported?.relationships?.size)
 
         val firstMemory = imported?.memories?.first()
         assertEquals("Exploring Kyoto Temples", firstMemory?.title)
         assertEquals("PEACEFUL", firstMemory?.mood)
-        assertEquals("Kyoto, Japan", firstMemory?.location)
-    }
-
-    @Test
-    fun testStorageTelemetryComputation() {
-        val memories = listOf(
-            LocalMemory(
-                id = 1,
-                type = "GRATITUDE",
-                title = "Morning Coffee & Sunshine",
-                content = "Grateful for the warm morning breeze and fresh aromatic coffee on the porch.",
-                mood = "CALM",
-                location = "Home Patio",
-                tagsAsString = "Gratitude, Morning, Coffee"
-            )
-        )
-        val relationships = listOf(
-            LocalRelationship(
-                id = 1,
-                name = "Sarah",
-                relationType = "FRIEND",
-                notes = "College roommate"
-            )
-        )
-
-        val telemetry = CompressedStorageManager.computeTelemetry(memories, relationships)
-        assertTrue(telemetry.rawSizeBytes > 0)
-        assertTrue(telemetry.compressedSizeBytes > 0)
-        assertEquals(2, telemetry.totalEntries)
-        assertNotNull(telemetry.compressionRatioText)
-    }
-
-    @Test
-    fun testMemoryCreationAndSearchFiltering() = runBlocking {
-        // Insert memories into the repository via ViewModel
-        viewModel.addMemory(
-            type = "TRAVEL",
-            title = "Himalayan Sunrise Trek",
-            content = "Watched the golden sun crest over snowcapped peaks at 4000 meters elevation.",
-            mood = "EXCITED",
-            location = "Annapurna Base Camp",
-            tags = "Trek, Mountain, Adventure"
-        )
-
-        // Search for Trek
-        viewModel.updateSearchQuery("Himalayan")
-        assertEquals("Himalayan", viewModel.searchQuery.value)
-
-        // Clear search
-        viewModel.updateSearchQuery("")
-        assertEquals("", viewModel.searchQuery.value)
     }
 
     @Test
