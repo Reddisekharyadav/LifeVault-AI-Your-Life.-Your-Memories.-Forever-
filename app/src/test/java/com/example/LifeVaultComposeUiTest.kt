@@ -73,8 +73,8 @@ class LifeVaultComposeUiTest {
         // Verify Dashboard tab is present
         composeTestRule.onNodeWithText("Dashboard").assertExists()
 
-        // Click Journal Lab tab
-        composeTestRule.onNodeWithText("Journal Lab").assertExists().performClick()
+        // Click Personal Diary tab
+        composeTestRule.onNodeWithText("📖 Personal Diary").assertExists().performClick()
         composeTestRule.waitForIdle()
 
         // Return to Dashboard

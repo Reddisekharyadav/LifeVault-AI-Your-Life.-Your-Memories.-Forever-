@@ -54,6 +54,7 @@ import com.example.data.model.LocalUser
 import com.example.data.storage.CompressedStorageManager
 import com.example.ui.auth.AuthScreen
 import com.example.ui.auth.ForgotPasswordDialog
+import com.example.ui.screens.PersonalDiaryScreen
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.viewmodel.MemoryViewModel
 import java.text.SimpleDateFormat
@@ -87,6 +88,7 @@ class MainActivity : ComponentActivity() {
 // Sub-nav screen tags
 enum class VaultScreen {
     DASHBOARD,
+    DIARY,
     CREATOR,
     TIMELINE,
     ACADEMIC,
@@ -162,8 +164,16 @@ fun StandardVaultWorkspace(
             }
             item {
                 TabChip(
-                    text = "Journal Lab",
+                    text = "📖 Personal Diary",
                     icon = Icons.Default.Edit,
+                    isSelected = currentScreen == VaultScreen.DIARY,
+                    onClick = { currentScreen = VaultScreen.DIARY }
+                )
+            }
+            item {
+                TabChip(
+                    text = "Journal Lab",
+                    icon = Icons.Default.Create,
                     isSelected = currentScreen == VaultScreen.CREATOR,
                     onClick = { currentScreen = VaultScreen.CREATOR }
                 )
@@ -209,7 +219,12 @@ fun StandardVaultWorkspace(
                 .weight(1f)
         ) {
             when (currentScreen) {
-                VaultScreen.DASHBOARD -> DashboardScreen(viewModel = viewModel, onNavigateToCreator = { currentScreen = VaultScreen.CREATOR })
+                VaultScreen.DASHBOARD -> DashboardScreen(
+                    viewModel = viewModel,
+                    onNavigateToCreator = { currentScreen = VaultScreen.CREATOR },
+                    onNavigateToDiary = { currentScreen = VaultScreen.DIARY }
+                )
+                VaultScreen.DIARY -> PersonalDiaryScreen(viewModel = viewModel)
                 VaultScreen.CREATOR -> CreatorScreen(viewModel = viewModel)
                 VaultScreen.TIMELINE -> TimelineScreen(viewModel = viewModel)
                 VaultScreen.ACADEMIC -> AcademicTravelScreen(viewModel = viewModel)
@@ -919,7 +934,8 @@ fun TabChip(
 @Composable
 fun DashboardScreen(
     viewModel: MemoryViewModel,
-    onNavigateToCreator: () -> Unit
+    onNavigateToCreator: () -> Unit,
+    onNavigateToDiary: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val memories by viewModel.allMemories.collectAsState()
@@ -1254,57 +1270,79 @@ fun DashboardScreen(
 
                         Spacer(modifier = Modifier.height(14.dp))
 
-                        // Controls Row: Done & Save, Pause, Cancel
-                        Row(
+                        // Controls Row: Done & Save, Convert to Diary, Pause, Cancel
+                        Column(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Button(
                                 onClick = {
-                                    viewModel.stopAndSaveVoiceRecording(voiceTitle, selectedMood)
-                                    voiceTitle = ""
+                                    viewModel.convertVoiceToPersonalDiary(customTitle = voiceTitle) {
+                                        voiceTitle = ""
+                                        onNavigateToDiary()
+                                    }
                                 },
                                 modifier = Modifier
-                                    .weight(1.5f)
-                                    .height(44.dp)
-                                    .testTag("save_voice_memo_button"),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
+                                    .fillMaxWidth()
+                                    .height(46.dp)
+                                    .testTag("convert_voice_to_personal_diary_btn"),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8B5CF6)),
                                 shape = RoundedCornerShape(12.dp)
                             ) {
-                                Icon(Icons.Default.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Save to Vault", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Text("✨ Convert Voice to Personal Diary (Auto-Emotion)", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                             }
 
-                            Button(
-                                onClick = {
-                                    if (isRecordingPaused) viewModel.resumeRecording() else viewModel.pauseRecording()
-                                },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(44.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF475569)),
-                                shape = RoundedCornerShape(12.dp)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Text(
-                                    text = if (isRecordingPaused) "Resume" else "Pause",
-                                    color = Color.White,
-                                    fontSize = 12.sp
-                                )
-                            }
+                                Button(
+                                    onClick = {
+                                        viewModel.stopAndSaveVoiceRecording(voiceTitle, selectedMood)
+                                        voiceTitle = ""
+                                    },
+                                    modifier = Modifier
+                                        .weight(1.3f)
+                                        .height(42.dp)
+                                        .testTag("save_voice_memo_button"),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Icon(Icons.Default.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Save Vault", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                }
 
-                            Button(
-                                onClick = {
-                                    viewModel.cancelRecording()
-                                    voiceTitle = ""
-                                },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(44.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155)),
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Text("Cancel", color = Color(0xFFCBD5E1), fontSize = 12.sp)
+                                Button(
+                                    onClick = {
+                                        if (isRecordingPaused) viewModel.resumeRecording() else viewModel.pauseRecording()
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(42.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF475569)),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Text(
+                                        text = if (isRecordingPaused) "Resume" else "Pause",
+                                        color = Color.White,
+                                        fontSize = 12.sp
+                                    )
+                                }
+
+                                Button(
+                                    onClick = {
+                                        viewModel.cancelRecording()
+                                        voiceTitle = ""
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(42.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155)),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Text("Cancel", color = Color(0xFFCBD5E1), fontSize = 12.sp)
+                                }
                             }
                         }
                     } else {
@@ -1316,7 +1354,7 @@ fun DashboardScreen(
                             fontSize = 17.sp
                         )
                         Text(
-                            text = "Speaks directly into the microphone. Converts your speech to text live and safely stores the memo inside your phone's internal storage.",
+                            text = "Speaks directly into the microphone. Converts your speech to text live, auto-predicts your emotion, and structures as a personal diary.",
                             color = Color(0xFF94A3B8),
                             fontSize = 12.sp,
                             textAlign = TextAlign.Center,
@@ -1325,20 +1363,36 @@ fun DashboardScreen(
 
                         Spacer(modifier = Modifier.height(10.dp))
 
-                        Button(
-                            onClick = requestVoiceRecord,
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
-                            shape = CircleShape,
-                            modifier = Modifier
-                                .size(72.dp)
-                                .testTag("mic_button")
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                Icons.Default.PlayArrow,
-                                contentDescription = "Start Voice Entry",
-                                tint = Color.White,
-                                modifier = Modifier.size(36.dp)
-                            )
+                            Button(
+                                onClick = requestVoiceRecord,
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
+                                shape = CircleShape,
+                                modifier = Modifier
+                                    .size(72.dp)
+                                    .testTag("mic_button")
+                            ) {
+                                Icon(
+                                    Icons.Default.PlayArrow,
+                                    contentDescription = "Start Voice Entry",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(36.dp)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        OutlinedButton(
+                            onClick = onNavigateToDiary,
+                            modifier = Modifier.fillMaxWidth().testTag("open_diary_editor_btn"),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Color(0xFF3B82F6))
+                        ) {
+                            Text("📖 Open Personal Diary Notebook Editor", color = Color(0xFF60A5FA), fontWeight = FontWeight.Bold, fontSize = 12.sp)
                         }
                     }
                 }
@@ -1586,6 +1640,7 @@ fun MemoryItemRow(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     val badgeColor = when (memory.type) {
+                        "DIARY" -> Color(0xFF8B5CF6)
                         "DREAM" -> Color(0xFF8B5CF6)
                         "GRATITUDE" -> Color(0xFF10B981)
                         "ACADEMIC" -> Color(0xFF3B82F6)
@@ -1601,7 +1656,11 @@ fun MemoryItemRow(
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
                         Text(
-                            text = if (memory.type == "VOICE") "🎙️ VOICE MEMOIR" else memory.type,
+                            text = when (memory.type) {
+                                "VOICE" -> "🎙️ VOICE MEMO"
+                                "DIARY" -> "📖 PERSONAL DIARY"
+                                else -> memory.type
+                            },
                             color = Color.White,
                             fontSize = 9.sp,
                             fontWeight = FontWeight.Bold

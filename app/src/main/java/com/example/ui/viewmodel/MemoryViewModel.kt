@@ -57,6 +57,11 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
     val currentAudioFileName = MutableStateFlow("")
     private var recordingJob: Job? = null
 
+    // AI Diary Formatting & Transformation State
+    val isFormattingDiary = MutableStateFlow(false)
+    val diaryFormatNotice = MutableStateFlow("")
+    val activeDiaryMemory = MutableStateFlow<LocalMemory?>(null)
+
     // Audio Playback in Dashboard Feed
     val playingMemoryId = MutableStateFlow<Long?>(null)
     val audioProgress = MutableStateFlow(0f)
@@ -446,38 +451,119 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
         recordingJob?.cancel()
 
         val rawTranscript = liveTranscript.value.trim()
-        val transcript = if (rawTranscript.isNotBlank()) {
-            rawTranscript
-        } else {
-            "Voice journal recording (${duration}s)"
-        }
-
         val currentEmail = localUserEmail.value.trim().lowercase().ifBlank { currentUser.value?.email?.trim()?.lowercase() ?: "" }
+
         viewModelScope.launch {
-            val summaryPrompt = "Extract a summary and key emotion for this spoken transcript: $transcript"
-            val aiSummaryText = repository.getAISummary(summaryPrompt)
+            isFormattingDiary.value = true
+            speechStatus.value = "Transcribing voice with AI & formatting as personal diary..."
+
+            val audioBytes = voiceStorageManager.getAudioFileBytes(internalFileName)
+
+            // Format voice input and audio into a neat personal diary format with predicted emotion
+            val diaryResult = repository.formatVoiceToPersonalDiary(
+                rawTranscript = rawTranscript,
+                durationSec = duration,
+                audioBytes = audioBytes,
+                audioMimeType = "audio/mp4"
+            )
 
             val autoTitle = if (title.isNotBlank()) {
                 title
-            } else if (rawTranscript.isNotBlank()) {
-                if (rawTranscript.length > 28) rawTranscript.take(28) + "..." else rawTranscript
             } else {
-                "Voice Memoir #${(100..999).random()}"
+                diaryResult.title
             }
 
-            val voiceMemory = LocalMemory(
+            val diaryMemory = LocalMemory(
                 userEmail = currentEmail,
-                type = "VOICE",
+                type = "DIARY",
                 title = autoTitle,
-                content = transcript,
-                mood = mood,
+                content = diaryResult.diaryContent,
+                mood = diaryResult.predictedEmotion,
+                location = "Voice Journal",
+                tagsAsString = diaryResult.tags.joinToString(", "),
                 audioPath = internalFileName,
-                voiceTranscript = transcript,
-                aiSummary = aiSummaryText,
+                voiceTranscript = rawTranscript,
+                aiSummary = "Predicted Emotion: ${diaryResult.predictedEmotion} • Transcribed and formatted as neat daily personal diary.",
                 isKidsMode = isKidsMode.value
             )
-            repository.insertMemory(voiceMemory)
-            speechStatus.value = "Voice memo saved to local phone storage!"
+            val newId = repository.insertMemory(diaryMemory)
+            val savedMemory = diaryMemory.copy(id = newId)
+            activeDiaryMemory.value = savedMemory
+
+            isFormattingDiary.value = false
+            speechStatus.value = "Voice successfully transformed into Personal Diary!"
+            diaryFormatNotice.value = "Voice converted to Diary (Emotion: ${diaryResult.predictedEmotion})"
+        }
+    }
+
+    /**
+     * Converts any raw transcript or voice input into structured Personal Diary format with AI-predicted emotion.
+     */
+    fun convertVoiceToPersonalDiary(
+        rawTranscript: String = "",
+        customTitle: String = "",
+        onCompleted: ((LocalMemory) -> Unit)? = null
+    ) {
+        val duration = recordingDuration.value.coerceAtLeast(1)
+        val internalFileName = if (isRecording.value) {
+            voiceStorageManager.stopRecording().ifBlank { currentAudioFileName.value }
+        } else {
+            currentAudioFileName.value
+        }
+
+        isRecording.value = false
+        isRecordingPaused.value = false
+        recordingJob?.cancel()
+
+        val sourceText = rawTranscript.trim().ifBlank { liveTranscript.value.trim() }
+        val currentEmail = localUserEmail.value.trim().lowercase().ifBlank { currentUser.value?.email?.trim()?.lowercase() ?: "" }
+
+        viewModelScope.launch {
+            isFormattingDiary.value = true
+            speechStatus.value = "Analyzing audio & structuring as personal diary..."
+
+            val audioBytes = voiceStorageManager.getAudioFileBytes(internalFileName)
+            val result = repository.formatVoiceToPersonalDiary(
+                rawTranscript = sourceText,
+                durationSec = duration,
+                audioBytes = audioBytes,
+                audioMimeType = "audio/mp4"
+            )
+            val finalTitle = if (customTitle.isNotBlank()) customTitle else result.title
+
+            val diaryMemory = LocalMemory(
+                userEmail = currentEmail,
+                type = "DIARY",
+                title = finalTitle,
+                content = result.diaryContent,
+                mood = result.predictedEmotion,
+                location = "Personal Journal",
+                tagsAsString = result.tags.joinToString(", "),
+                audioPath = internalFileName,
+                voiceTranscript = sourceText,
+                aiSummary = "Predicted Emotion: ${result.predictedEmotion}",
+                isKidsMode = isKidsMode.value
+            )
+
+            val newId = repository.insertMemory(diaryMemory)
+            val saved = diaryMemory.copy(id = newId)
+            activeDiaryMemory.value = saved
+            isFormattingDiary.value = false
+            speechStatus.value = "Diary created with emotion ${result.predictedEmotion}!"
+            diaryFormatNotice.value = "Diary created! Emotion: ${result.predictedEmotion}"
+            onCompleted?.invoke(saved)
+        }
+    }
+
+    /**
+     * AI-format arbitrary text in editor as a structured Personal Diary format.
+     */
+    fun formatTextToPersonalDiary(rawText: String, onFinished: (title: String, diaryContent: String, predictedEmotion: String) -> Unit) {
+        viewModelScope.launch {
+            isFormattingDiary.value = true
+            val result = repository.formatVoiceToPersonalDiary(rawTranscript = rawText, durationSec = 0)
+            isFormattingDiary.value = false
+            onFinished(result.title, result.diaryContent, result.predictedEmotion)
         }
     }
 

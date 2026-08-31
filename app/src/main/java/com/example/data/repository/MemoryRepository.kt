@@ -67,5 +67,19 @@ class MemoryRepository(private val memoryDao: MemoryDao) {
     suspend fun getAISummary(prompt: String): String {
         return GeminiClient.generateContent(prompt)
     }
+
+    suspend fun formatVoiceToPersonalDiary(
+        rawTranscript: String = "",
+        durationSec: Int = 0,
+        audioBytes: ByteArray? = null,
+        audioMimeType: String = "audio/mp4"
+    ): com.example.data.api.DiaryConversionResult {
+        return GeminiClient.formatVoiceToPersonalDiary(
+            rawTranscript = rawTranscript,
+            durationSec = durationSec,
+            audioBytes = audioBytes,
+            audioMimeType = audioMimeType
+        )
+    }
 }
 

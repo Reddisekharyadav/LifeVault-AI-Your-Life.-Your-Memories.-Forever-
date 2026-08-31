@@ -1,6 +1,8 @@
 package com.example.data.api
 
+import android.util.Base64
 import com.example.BuildConfig
+import com.squareup.moshi.Json
 import com.squareup.moshi.JsonClass
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
@@ -23,8 +25,15 @@ data class GeminiContent(
 )
 
 @JsonClass(generateAdapter = true)
+data class GeminiBlob(
+    @Json(name = "mime_type") val mimeType: String,
+    val data: String
+)
+
+@JsonClass(generateAdapter = true)
 data class GeminiPart(
-    val text: String
+    val text: String? = null,
+    @Json(name = "inline_data") val inlineData: GeminiBlob? = null
 )
 
 @JsonClass(generateAdapter = true)
@@ -38,15 +47,28 @@ data class GeminiCandidate(
 )
 
 interface GeminiApiService {
-    @POST("v1beta/models/gemini-3.5-flash:generateContent")
+    @POST("v1beta/models/{model}:generateContent")
     suspend fun generateContent(
+        @retrofit2.http.Path("model") model: String,
         @Query("key") apiKey: String,
         @Body request: GeminiRequest
     ): GeminiResponse
 }
 
+data class DiaryConversionResult(
+    val title: String,
+    val diaryContent: String,
+    val predictedEmotion: String,
+    val tags: List<String>
+)
+
 object GeminiClient {
     private const val BASE_URL = "https://generativelanguage.googleapis.com/"
+
+    // Recommended top models for audio & text tasks
+    const val MODEL_AUDIO_PRIMARY = "gemini-2.5-flash"
+    const val MODEL_AUDIO_FALLBACK = "gemini-2.5-flash-native-audio-preview-12-2025"
+    const val MODEL_TEXT_PRIMARY = "gemini-3.5-flash"
 
     private val moshi = Moshi.Builder()
         .addLast(KotlinJsonAdapterFactory())
@@ -83,22 +105,252 @@ object GeminiClient {
         )
 
         return try {
-            val response = service.generateContent(apiKey, request)
+            val response = service.generateContent(MODEL_TEXT_PRIMARY, apiKey, request)
             response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
                 ?: generateLocalFallback(prompt)
         } catch (e: Exception) {
-            e.printStackTrace()
-            generateLocalFallback(prompt)
+            try {
+                val fallbackResponse = service.generateContent(MODEL_AUDIO_PRIMARY, apiKey, request)
+                fallbackResponse.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
+                    ?: generateLocalFallback(prompt)
+            } catch (e2: Exception) {
+                e2.printStackTrace()
+                generateLocalFallback(prompt)
+            }
+        }
+    }
+
+    /**
+     * Converts voice audio bytes or a raw transcript into a clean, point-wise personal diary entry.
+     * Uses Gemini 2.5 Flash Multimodal Audio to transcribe audio directly with highest accuracy.
+     */
+    suspend fun formatVoiceToPersonalDiary(
+        rawTranscript: String = "",
+        durationSec: Int = 0,
+        audioBytes: ByteArray? = null,
+        audioMimeType: String = "audio/mp4"
+    ): DiaryConversionResult {
+        val trimmedTranscript = rawTranscript.trim()
+        val predictedEmotion = predictEmotionFromText(trimmedTranscript)
+        val dateHeader = java.text.SimpleDateFormat("EEEE, MMMM d, yyyy • h:mm a", java.util.Locale.getDefault()).format(java.util.Date())
+
+        val apiKey = BuildConfig.GEMINI_API_KEY
+        val hasApiKey = apiKey.isNotBlank() && apiKey != "MY_GEMINI_API_KEY"
+
+        if (hasApiKey) {
+            val partsList = mutableListOf<GeminiPart>()
+
+            // 1. If real audio bytes are present (> 500 bytes), attach inline audio
+            val hasAudio = audioBytes != null && audioBytes.size > 500
+            if (hasAudio) {
+                try {
+                    val base64Audio = Base64.encodeToString(audioBytes, Base64.NO_WRAP)
+                    partsList.add(GeminiPart(inlineData = GeminiBlob(mimeType = audioMimeType, data = base64Audio)))
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+
+            val promptText = buildString {
+                appendLine("You are an expert audio transcriber and personal diary creator.")
+                if (hasAudio) {
+                    appendLine("Listen to the attached audio recording with high precision. Transcribe every spoken word accurately.")
+                }
+                if (trimmedTranscript.isNotBlank()) {
+                    appendLine("Live speech transcript hint: \"$trimmedTranscript\"")
+                }
+                appendLine("""
+                    Convert and format the user's spoken thoughts into a clean, point-wise Personal Daily Diary template.
+                    
+                    MANDATORY RULES:
+                    1. Faithfully extract and transcribe what was spoken.
+                    2. Detect the authentic emotion/mood (choose ONE of: GRATEFUL, HAPPY, CALM, EXCITED, TIRED, REFLECTIVE, SAD, ANGRY, DETERMINED).
+                    3. Format strictly as a clean point-wise Personal Diary with bullet points.
+                    4. Strictly DO NOT output placeholder text, fictional morning routines, or generic sample stories.
+                    5. If no speech was detected, write: • (No clear speech recorded)
+                    
+                    Required Output Structure:
+                    Title: [Short title reflecting what was spoken]
+                    Mood: [Mood category]
+                    
+                    📅 $dateHeader
+                    🌿 Mood: [Mood category with matching emoji]
+                    
+                    • [Point-wise bullet items of spoken thoughts]
+                """.trimIndent())
+            }
+
+            partsList.add(GeminiPart(text = promptText))
+
+            val request = GeminiRequest(
+                contents = listOf(GeminiContent(parts = partsList))
+            )
+
+            // Try primary model (gemini-2.5-flash)
+            for (modelName in listOf(MODEL_AUDIO_PRIMARY, MODEL_AUDIO_FALLBACK, MODEL_TEXT_PRIMARY)) {
+                try {
+                    val response = service.generateContent(modelName, apiKey, request)
+                    val fullResponse = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
+                    if (!fullResponse.isNullOrBlank()) {
+                        val extractedTitle = extractTitleFromDiary(fullResponse, trimmedTranscript)
+                        val extractedEmotion = predictEmotionFromText(fullResponse + " " + trimmedTranscript)
+                        val bodyContent = fullResponse.lines()
+                            .filterNot { it.startsWith("Title:", ignoreCase = true) || it.startsWith("Mood:", ignoreCase = true) }
+                            .joinToString("\n").trim()
+
+                        return DiaryConversionResult(
+                            title = extractedTitle,
+                            diaryContent = if (bodyContent.isNotBlank()) bodyContent else fullResponse,
+                            predictedEmotion = extractedEmotion,
+                            tags = listOf("PersonalDiary", "VoiceMemo", extractedEmotion.lowercase())
+                        )
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("GeminiClient", "Model $modelName attempt failed: ${e.message}")
+                }
+            }
+        }
+
+        // Local fallback (Clean template with no fake demo text)
+        return formatLocalVoiceToDiary(trimmedTranscript, predictedEmotion, dateHeader)
+    }
+
+    private fun formatLocalVoiceToDiary(transcript: String, emotion: String, dateHeader: String): DiaryConversionResult {
+        val moodEmoji = when (emotion) {
+            "GRATEFUL" -> "🙏 Grateful"
+            "EXCITED" -> "🤩 Excited"
+            "HAPPY" -> "😊 Happy"
+            "SAD" -> "🌧️ Sad"
+            "TIRED" -> "🌙 Tired"
+            "ANGRY" -> "⚡ Frustrated"
+            "REFLECTIVE" -> "💭 Reflective"
+            else -> "🧘 Calm"
+        }
+
+        val sentences = if (transcript.isNotBlank()) {
+            transcript.split(Regex("(?<=[.!?])\\s+|\\n+"))
+                .map { it.trim().removePrefix("•").trim() }
+                .filter { it.isNotEmpty() }
+        } else {
+            emptyList()
+        }
+
+        val bulletPoints = if (sentences.isNotEmpty()) {
+            sentences.joinToString("\n") { "• $it" }
+        } else {
+            "• (No speech detected yet)"
+        }
+
+        val diaryText = buildString {
+            appendLine("📅 $dateHeader")
+            appendLine("🌿 Mood: $moodEmoji")
+            appendLine()
+            append(bulletPoints)
+        }
+
+        val shortDate = java.text.SimpleDateFormat("MMM d, yyyy", java.util.Locale.getDefault()).format(java.util.Date())
+        val titleSnippet = if (transcript.isNotBlank()) {
+            val snippet = transcript.take(28).trim()
+            "Diary • $shortDate ($snippet...)"
+        } else {
+            "Diary • $shortDate"
+        }
+
+        return DiaryConversionResult(
+            title = titleSnippet,
+            diaryContent = diaryText,
+            predictedEmotion = emotion,
+            tags = listOf("PersonalDiary", "VoiceMemo", emotion.lowercase())
+        )
+    }
+
+    fun predictEmotionFromText(text: String): String {
+        val lower = text.lowercase()
+        return when {
+            lower.contains("thank") || lower.contains("grateful") || lower.contains("blessed") || lower.contains("appreciat") -> "GRATEFUL"
+            lower.contains("excite") || lower.contains("amazing") || lower.contains("awesome") || lower.contains("celebrat") || lower.contains("won") || lower.contains("thrill") -> "EXCITED"
+            lower.contains("happy") || lower.contains("joy") || lower.contains("smile") || lower.contains("laugh") || lower.contains("fun") || lower.contains("delight") -> "HAPPY"
+            lower.contains("sad") || lower.contains("cry") || lower.contains("miss") || lower.contains("lonely") || lower.contains("hurt") || lower.contains("grief") || lower.contains("depress") -> "SAD"
+            lower.contains("tire") || lower.contains("exhaust") || lower.contains("sleep") || lower.contains("drain") || lower.contains("rest") || lower.contains("fatigue") -> "TIRED"
+            lower.contains("angry") || lower.contains("frustrat") || lower.contains("mad") || lower.contains("annoy") || lower.contains("stress") || lower.contains("furious") -> "ANGRY"
+            lower.contains("determin") || lower.contains("goal") || lower.contains("focus") || lower.contains("achiev") || lower.contains("push") || lower.contains("win") -> "DETERMINED"
+            lower.contains("think") || lower.contains("wonder") || lower.contains("realiz") || lower.contains("ponder") || lower.contains("learn") || lower.contains("reflect") || lower.contains("meditat") || lower.contains("thought") -> "REFLECTIVE"
+            else -> "CALM"
+        }
+    }
+
+    private fun extractTitleFromDiary(diaryText: String, fallbackText: String): String {
+        val lines = diaryText.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        for (line in lines) {
+            if (line.startsWith("#") || line.startsWith("Title:") || line.startsWith("Diary:") || line.startsWith("Entry:")) {
+                val clean = line.replace("#", "").replace("Title:", "").replace("Diary:", "").trim()
+                if (clean.length in 5..60) return clean
+            }
+        }
+        val dateHeader = java.text.SimpleDateFormat("EEEE, MMM d", java.util.Locale.getDefault()).format(java.util.Date())
+        return if (fallbackText.isNotBlank()) {
+            val snippet = fallbackText.take(24).trim()
+            "Diary • $dateHeader ($snippet...)"
+        } else {
+            "Personal Diary • $dateHeader"
         }
     }
 
     /**
      * Outstanding Offline Local AI engine mapping for fully offline operational integrity.
-     * Generates rich stories, diary summaries, mood analytics, gratitude logs, and dream interpretations.
+     * Generates rich stories, diary summaries, mood analytics, gratitude logs, and personal diary formatting.
      */
     fun generateLocalFallback(prompt: String): String {
         val promptLower = prompt.lowercase()
+        val now = java.util.Date()
+        val fullDateFormat = java.text.SimpleDateFormat("EEEE, MMMM d, yyyy • h:mm a", java.util.Locale.getDefault())
+        val dateString = fullDateFormat.format(now)
+
         return when {
+            // Personal Diary Formatting
+            promptLower.contains("diary") || promptLower.contains("journal") || promptLower.contains("transcript") -> {
+                val predictedMood = predictEmotionFromText(prompt)
+                val moodEmoji = when (predictedMood) {
+                    "GRATEFUL" -> "🙏 Grateful"
+                    "EXCITED" -> "🤩 Excited"
+                    "HAPPY" -> "😊 Happy"
+                    "SAD" -> "🌧️ Sad"
+                    "TIRED" -> "🌙 Tired"
+                    "ANGRY" -> "⚡ Frustrated"
+                    "REFLECTIVE" -> "💭 Reflective"
+                    else -> "🧘 Calm"
+                }
+
+                // Extract spoken snippets if available
+                val rawExcerpt = prompt.substringAfter("Spoken Speech: \"", "")
+                    .substringBefore("\"", "")
+                    .ifBlank {
+                        prompt.substringAfter("Spoken Voice Transcript: \"", "")
+                            .substringBefore("\"", "")
+                    }
+                    .trim()
+
+                val sentences = if (rawExcerpt.isNotBlank()) {
+                    rawExcerpt.split(Regex("(?<=[.!?])\\s+|\\n+"))
+                        .map { it.trim().removePrefix("•").trim() }
+                        .filter { it.isNotEmpty() }
+                } else {
+                    emptyList()
+                }
+
+                val bulletPoints = if (sentences.isNotEmpty()) {
+                    sentences.joinToString("\n") { "• $it" }
+                } else {
+                    "• (No speech recorded yet)"
+                }
+
+                """
+                📅 $dateString
+                🌿 Mood: $moodEmoji
+
+                $bulletPoints
+                """.trimIndent()
+            }
             // Dream categorization
             promptLower.contains("dream") -> {
                 val categories = listOf("Prophetic", "Subconscious Processing", "Lucid Fantasy", "Emotional Release", "Creativity Spark")
