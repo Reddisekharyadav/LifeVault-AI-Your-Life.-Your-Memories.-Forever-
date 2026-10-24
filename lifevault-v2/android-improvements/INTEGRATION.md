@@ -1,5 +1,20 @@
 # LifeVault AI v2 — Android Improvement Pack, Round 1: Integration Guide
 
+> **READ THIS FIRST — this pack is NOT a fixed Android app.**
+> It is uncompiled helper code (`LocalIntelligence.kt`, its tests, and
+> backup rules) **plus** the integration steps below. Copying
+> `LocalIntelligence.kt` alone does **not** fix v1. In particular, v1's
+> Gemini cloud path, its plaintext PIN, and its unencrypted Room database
+> are **only** fixed when the corresponding steps below are actually
+> implemented **and tested in Android Studio**: the Step 5 cloud-consent
+> gate for Gemini, PIN hashing (see Step 13 point 5 — hashing alone is
+> not encryption), and the SQLCipher encryption work listed in
+> `ROUND2_NOTES.md` / "What Round 2 should fix next". Until those land
+> and their tests pass, v1 behaviour remains, and `HONEST_README.md`
+> describes the **target state after full integration and verification**,
+> not what the unmodified v1 app does today. Do not present this pack,
+> on its own, as a fixed, encrypted, or fully offline Android app.
+
 **For:** a developer opening the v1 Android project in Android Studio.
 **Scope:** a drop-in improvement pack, NOT a rewrite. The v1 `MainActivity.kt`
 (3,366 lines) stays where it is; this pack fixes the worst correctness,
@@ -245,6 +260,42 @@ val flashbacks = onThisDay(memories.map { it.toSearchable() }, System.currentTim
 build, or by waiting) to the same month/day last year and confirm it — and
 only it — appears in On This Day; confirm an `id % 2 == 0` memory from a
 different date does not.
+
+### Step 4a — Legacy ANGRY moods: explicit mapping, never silent conversion
+
+**Why:** the new mood set has 8 moods and no ANGRY, but v1 entries
+already saved with mood `ANGRY` still exist in users' databases.
+Dropping those values to "unknown", or silently re-labelling them as
+ANXIOUS, SAD, or CALM, would rewrite the user's own history without
+telling them. That is forbidden in this pack.
+
+**The mapping (do this exactly, and use `legacyMoodDisplay()` in
+`LocalIntelligence.kt` for it):**
+
+| Stored mood value | Display in detail / timeline | Analytics / counts | New entries |
+|---|---|---|---|
+| `ANGRY` (any case) | **"Angry (legacy)"** — shown with that exact label, so the user can see it came from the old set | Counted in a separate **"Angry (legacy)"** bucket, not folded into ANXIOUS, SAD, or any of the 8 moods | ANGRY is **not** offered as a choice; new entries use only the 8 moods |
+| Any of the 8 moods (HAPPY, CALM, GRATEFUL, EXCITED, TIRED, SAD, REFLECTIVE, ANXIOUS) | Shown as saved, unchanged | Counted under that mood | Unchanged |
+| Blank / unrecognised | "Unknown — no mood was recorded" | Not counted as any mood | Unchanged |
+
+**On editing a legacy entry:** do not auto-convert it. Show
+"Previously labelled Angry (legacy)" and offer the user a choice:
+keep the legacy label, or pick one of the 8 moods. Only replace the
+stored value when the user picks a new one. Do not run a database
+migration that rewrites ANGRY to another mood.
+
+**Search:** a search for "angry" must still find legacy ANGRY entries
+(via their stored mood and via content words), and the search synonym
+map in `LocalIntelligence.kt` deliberately still contains "angry" as a
+search term — that is a search term, not a new-entry mood, and the two
+must not be confused.
+
+**Verify:** create a test entry with stored mood `ANGRY`, open it, and
+confirm the detail shows "Angry (legacy)", the analytics show a legacy
+bucket, and editing it does not change the stored value unless you
+explicitly pick a new mood. The test
+`legacyMoodDisplay_preservesAngryAsLegacyNeverConvertsIt` covers the
+helper; the UI behaviour above must still be checked by hand.
 
 ---
 

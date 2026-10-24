@@ -81,6 +81,36 @@ class LocalIntelligenceTest {
     }
 
     @Test
+    fun mood_stemmedFormsStillClassify() {
+        // Retest: mood words were compared unstemmed to stemmed tokens,
+        // so "thinking" (stem "think"), "blessed" ("bles"), "still"
+        // ("stil") and "missing" ("mis") failed their own list entries.
+        assertEquals(Mood.REFLECTIVE, classifyMood("I keep thinking about those days").topMood)
+        assertEquals(Mood.SAD, classifyMood("I am missing them").topMood)
+        assertEquals(Mood.CALM, classifyMood("A still, quiet morning").topMood)
+        assertEquals(Mood.GRATEFUL, classifyMood("I feel blessed today").topMood)
+    }
+
+    @Test
+    fun mood_newTextAngerIsUnknownNotForcedIntoAnotherMood() {
+        // New text: anger words are not in the 8-mood set, so they must
+        // not be forced into ANXIOUS, SAD, or any other mood.
+        val result = classifyMood("I am furious and mad")
+        assertEquals(0.0, result.confidence, 0.0001)
+        assertTrue(result.topMood != Mood.ANXIOUS && result.topMood != Mood.SAD)
+    }
+
+    @Test
+    fun legacyMoodDisplay_preservesAngryAsLegacyNeverConvertsIt() {
+        // Agent C rule: stored ANGRY is displayed as legacy, never
+        // silently re-labelled as ANXIOUS, SAD, CALM, or unknown.
+        assertEquals("Angry (legacy)", legacyMoodDisplay("ANGRY"))
+        assertEquals("Angry (legacy)", legacyMoodDisplay("angry"))
+        assertEquals("HAPPY", legacyMoodDisplay("HAPPY"))
+        assertEquals("CALM", legacyMoodDisplay("CALM"))
+    }
+
+    @Test
     fun mood_noMoodWordsIsUnknownCalmWithZeroConfidence() {
         val result = classifyMood("Went to the shop and bought milk")
         assertEquals(Mood.CALM, result.topMood)
@@ -104,6 +134,18 @@ class LocalIntelligenceTest {
         val memory = SearchableMemory(id = 1, title = "Seaside walk", content = "waves and sand")
         val results = searchMemories("beach", listOf(memory))
         assertEquals(1, results.size)
+    }
+
+    @Test
+    fun search_synonymSurvivesStemming() {
+        // Retest: stemming first broke synonyms — "delighted" became
+        // "delight" (not in the map), "exhausted" became "exhaust",
+        // "relaxed" became "relax" — so they no longer matched their
+        // canonical terms. Canonicalising before stemming fixes this.
+        val memory = SearchableMemory(id = 1, title = "A long day", content = "exhausted and relaxed after work, delighted to be home")
+        assertEquals(1, searchMemories("tired", listOf(memory)).size)
+        assertEquals(1, searchMemories("calm", listOf(memory)).size)
+        assertEquals(1, searchMemories("happy", listOf(memory)).size)
     }
 
     @Test

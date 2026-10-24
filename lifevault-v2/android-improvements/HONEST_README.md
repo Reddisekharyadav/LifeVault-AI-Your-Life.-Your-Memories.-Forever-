@@ -1,9 +1,18 @@
 # LifeVault AI — Your Life. Your Memories. Forever. (v2, Android — Honest README)
 
-> **Plain-language version.** This README describes what the Android app
-> actually does after the Round 1 improvement pack — not what it hopes to
-> do one day. If a sentence here and a sentence in the app disagree, this
-> README is the one to fix the app to match, not the other way round.
+> **Plain-language version, and an important status note.** This README
+> describes the **target state after the Round 1 improvement pack is
+> fully integrated and verified in Android Studio** — not what the
+> unmodified v1 app does today, and not what merely copying
+> `LocalIntelligence.kt` into a project achieves on its own. Until the
+> INTEGRATION.md steps (including the cloud-consent gate, PIN handling,
+> and the SQLCipher encryption work, which is not done yet) are
+> implemented and their tests pass, v1 behaviour remains: a Gemini cloud
+> path that is not gated, a plaintext PIN, and an unencrypted database.
+> If a sentence here and a sentence in the app disagree, this README is
+> the one to fix the app to match, not the other way round — and the
+> app must not be described as fixed, encrypted, or fully offline
+> until that integration is actually done.
 
 ## What LifeVault is
 
@@ -15,14 +24,17 @@ server in this app. Your memories live on your phone.
 ## What is actually offline
 
 - Writing, reading, searching, and deleting memories: **offline, on your
-  phone.** Search ranking, mood suggestions, summaries labelled
-  "From your own words", On This Day flashbacks, streaks, and
-  most-mentioned people/places/tags are all computed on your device from
-  your own entries. No network call is made for any of them.
-- Voice recording and on-device transcription: **offline on your phone**
-  (using your phone's own speech recognition where the device provides it).
-  Recordings are stored in the app's private `voice_vault/` folder, not in
-  a shared folder other apps can browse.
+  phone, when cloud help is off (the default).** Search ranking, mood
+  suggestions, summaries labelled "From your own words", On This Day
+  flashbacks, streaks, and most-mentioned people/places/tags are all
+  computed on your device from your own entries. No network call is made
+  for any of them when cloud help is off.
+- Voice recording and transcription: recordings are stored in the app's
+  private `voice_vault/` folder, not in a shared folder other apps can
+  browse. Transcription uses your phone's speech recognition, which on
+  some devices may use a cloud service — check your device's speech
+  settings, because this pack does not change that path, and do not
+  describe transcription as guaranteed offline on every device.
 
 ## What uses the cloud — only if you opt in
 

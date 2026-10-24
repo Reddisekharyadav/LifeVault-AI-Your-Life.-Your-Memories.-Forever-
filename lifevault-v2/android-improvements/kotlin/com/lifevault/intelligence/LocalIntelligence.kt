@@ -104,7 +104,14 @@ fun tokenize(text: String): List<String> {
         .split(Regex("[^a-z0-9']+"))
         .map { it.trim('\'') }
         .filter { it.isNotBlank() && it !in STOPWORDS }
-        .map { canonicalTerm(stemLite(it)) }
+        // Retest fix: canonicalise BEFORE stemming, then again after.
+        // Stemming first broke synonyms ("delighted" -> "delight", which is
+        // not in the synonym map, so it no longer matched "happy";
+        // "exhausted" -> "exhaust" no longer matched "tired"). Canonical
+        // first means both the query and the document land on the same
+        // canonical term, and the second canonical pass is a no-op safety
+        // net for stems that happen to be synonyms themselves.
+        .map { canonicalTerm(stemLite(canonicalTerm(it))) }
 }
 
 /** Raw tokens in order, stopwords kept — needed for the mood negation window. */
@@ -233,18 +240,21 @@ fun searchMemories(query: String, memories: List<SearchableMemory>): List<Search
 
 /** ROUND 2: the same 8 moods as web v2 (Happy, Calm, Grateful, Excited, Tired,
  *  Sad, Reflective, Anxious). The Round-1 set had only 6 and included ANGRY,
- *  which web v2 does not use. ANGRY was removed deliberately: anger words
- *  ("furious", "mad", "annoyed") now fall through to no-mood (unknown) rather
- *  than being forced into a label the web app cannot display. If the Android
- *  app's stored mood column still contains ANGRY values, map them at the UI
- *  layer (e.g. show as "no mood suggested") — do not silently re-label them.
+ *  which web v2 does not use. ANGRY was removed deliberately for NEW entries:
+ *  anger words in new text ("furious", "mad", "annoyed") fall through to
+ *  no-mood (unknown) rather than being forced into a label the web app
+ *  cannot display. That is NOT the rule for STORED legacy values: entries
+ *  already saved with mood ANGRY must use the explicit mapping in
+ *  INTEGRATION.md Step 4a — display "Angry (legacy)", count them in a
+ *  legacy bucket, never silently re-label them as ANXIOUS, SAD, or CALM,
+ *  and never silently drop them. See legacyMoodDisplay() below.
  *  GRATEFUL words were moved out of HAPPY so "grateful" no longer classifies
  *  as HAPPY. */
 enum class Mood { HAPPY, CALM, GRATEFUL, EXCITED, TIRED, SAD, REFLECTIVE, ANXIOUS }
 
 
 private val MOOD_WORDS: Map<Mood, Set<String>> = mapOf(
-    Mood.HAPPY to setOf("happy", "joy", "joyful", "glad", "delight", "smile", "laugh", "love", "lovely", "wonderful", "great", "beautiful", "proud", "cheerful", "content"),
+    Mood.HAPPY to setOf("happy", "joy", "joyful", "glad", "delight", "smile", "smil", "laugh", "love", "lov", "lovely", "wonderful", "great", "beautiful", "proud", "cheerful", "content"),
     Mood.CALM to setOf("calm", "peace", "peaceful", "relax", "serene", "quiet", "still", "gentle", "tranquil", "restful", "breathe"),
     Mood.GRATEFUL to setOf("grateful", "thankful", "blessed", "appreciat", "gratitude"),
     Mood.EXCITED to setOf("excit", "thrill", "amazing", "awesome", "fantastic", "incredible", "eager", "celebrat", "party", "adventure", "wow"),
@@ -254,12 +264,42 @@ private val MOOD_WORDS: Map<Mood, Set<String>> = mapOf(
     Mood.ANXIOUS to setOf("anxious", "worri", "nervous", "stress", "afraid", "panic", "anxiety")
 )
 
-/** Words checked against stemmed tokens, so keep these stems short on purpose. */
+/**
+ * Words checked against stemmed tokens. Retest fix: the mood words
+ * themselves must be stemmed before comparing, because classifyMood()
+ * stems the input token first. Comparing a stemmed token to an unstemmed
+ * word silently broke real cases: "thinking" stems to "think" but the
+ * list held "thinking"; "blessed" stems to "bles" but the list held
+ * "blessed"; "still" stems to "stil", "miss" to "mis", "stress" to
+ * "stres", "amazing" to "amaz", "anxious" to "anxiou" — none of those
+ * matched their own list entry. Stemming both sides fixes them, because
+ * the same stemLite() is applied to both. The "smil"/"lov" stems in
+ * HAPPY exist for the same reason: "smiling" stems to "smil" and
+ * "loving" starts with "lov", so the full forms alone did not match.
+ */
 private fun moodOfToken(token: String): Mood? {
     for ((mood, words) in MOOD_WORDS) {
-        if (words.any { token == it || token.startsWith(it) }) return mood
+        if (words.any { val stemmedWord = stemLite(it); token == stemmedWord || token.startsWith(stemmedWord) }) return mood
     }
     return null
+}
+
+/**
+ * Display label for a mood value already stored in the database.
+ *
+ * Explicit legacy mapping (see INTEGRATION.md Step 4a, which is the
+ * authoritative rule — do not change this function without changing it
+ * there too):
+ *  - "ANGRY" (any case) -> "Angry (legacy)". It is preserved as a
+ *    legacy label, counted separately, and offered no new-entry choice.
+ *    It is NEVER converted to ANXIOUS, SAD, CALM, or "unknown" silently.
+ *  - Any other stored value -> returned trimmed and unchanged, so the
+ *    function never silently re-labels a mood the user already saved.
+ * New entries must be created from the 8 Mood values only; this function
+ * does not create moods, it only labels stored ones.
+ */
+fun legacyMoodDisplay(storedMood: String): String {
+    return if (storedMood.trim().uppercase() == "ANGRY") "Angry (legacy)" else storedMood.trim()
 }
 
 private val NEGATIONS = setOf("not", "never", "no", "n't", "dont", "don't", "cant", "can't", "wont", "won't", "isnt", "isn't", "wasnt", "wasn't", "didnt", "didn't")

@@ -1,7 +1,17 @@
 # LifeVault AI v2 — Android Improvement Pack (Round 1)
 
-Drop-in pack for Android Studio. NOT a rewrite, NOT a new app. The original
-in `~/workspace/lifevault` was not modified.
+Drop-in pack for Android Studio. NOT a rewrite, NOT a new app, and NOT a
+fixed Android app on its own. The original in `~/workspace/lifevault`
+was not modified.
+
+> **Honest status:** this pack is uncompiled helper code plus
+> integration steps. It has **not** been compiled or tested here (no
+> JDK/SDK in this environment). V1's Gemini cloud path, plaintext PIN,
+> and unencrypted Room database are only fixed when the relevant
+> INTEGRATION.md steps and the SQLCipher work in ROUND2_NOTES.md are
+> actually implemented and tested in Android Studio. Until then, read
+> `HONEST_README.md` as the **target state after full integration and
+> verification** — not as a description of the unmodified v1 app.
 
 ## Contents
 
