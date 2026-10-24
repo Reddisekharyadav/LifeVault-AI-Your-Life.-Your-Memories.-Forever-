@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  LifeVault AI v2 — Auto Backup rules (pre-API 31 devices).
+  Drop-in replacement for app/src/main/res/xml/backup_rules.xml.
+
+  PRINCIPLE: a memory vault must not silently leave the device in a cloud
+  backup the user never asked for. Everything that can identify or reproduce
+  a user's memories is EXCLUDED here: the Room database, voice recordings,
+  and session preferences. Nothing else in the app is sensitive enough to
+  need excluding, so no <include> block is used — the default (back up
+  everything else) applies to the remainder.
+
+  Domains used (see developer.android.com/guide/topics/data/autobackup):
+    database  -> files in getDatabasePath(), e.g. lifevault_database
+    file      -> files in getFilesDir(), e.g. voice_vault/
+    sharedpref-> files in getSharedPrefsDir(), e.g. session prefs
+
+  ALTERNATIVE — allowBackup=false (STRONGER, and preferred for a vault app):
+    If you set android:allowBackup="false" in AndroidManifest.xml, Android
+    Auto Backup is disabled entirely and these rules become irrelevant for
+    that mechanism. That is the recommendation in INTEGRATION.md step 10:
+    a vault app should not rely on exclusion lists staying correct as new
+    files are added. Keep these rules in place anyway, because:
+      (a) they document exactly what must never be backed up, and
+      (b) if allowBackup is ever flipped back to true by mistake, the vault
+          is still excluded instead of silently uploaded.
+    Note: allowBackup=false does NOT disable the user's own SAF export in
+    step 9 — that export only happens when the user picks a file, on purpose.
+-->
+<full-backup-content>
+    <!-- Room database + its journal/WAL sidecars (exact names are wildcards). -->
+    <exclude domain="database" path="lifevault_database" />
+    <exclude domain="database" path="lifevault_database-journal" />
+    <exclude domain="database" path="lifevault_database-wal" />
+    <exclude domain="database" path="lifevault_database-shm" />
+    <!-- Any other database file, as a safety net if the name ever changes. -->
+    <exclude domain="database" path="." />
+
+    <!-- Voice recordings live under filesDir/voice_vault/. -->
+    <exclude domain="file" path="voice_vault" />
+
+    <!-- Session / login state (SharedPreferences file "lifevault_local_session"
+         in MemoryViewModel). Never restore a logged-in session onto a
+         different device, and never leak the stored PIN-adjacent state. -->
+    <exclude domain="sharedpref" path="lifevault_local_session.xml" />
+    <!-- Draft autosaves (see INTEGRATION.md step 8) are unfinished memories:
+         they stay on the device too. File name must match the drafts prefs. -->
+    <exclude domain="sharedpref" path="lifevault_drafts.xml" />
+</full-backup-content>

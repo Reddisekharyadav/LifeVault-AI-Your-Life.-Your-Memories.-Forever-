@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  LifeVault AI v2 — Data extraction rules (API 31+ devices).
+  Drop-in replacement for app/src/main/res/xml/data_extraction_rules.xml.
+
+  This is the API 31+ counterpart of backup_rules.xml and must say the same
+  thing: the vault never leaves the device through cloud backup or device
+  transfer unless the user explicitly exports it (SAF file picker, see
+  INTEGRATION.md step 9).
+
+  Two sections, both restrictive:
+    cloud-backup    -> Android Auto Backup to the user's Google account.
+    device-transfer -> device-to-device transfer (e.g. new-phone setup).
+  Excluding the vault from BOTH is deliberate: a "new phone" transfer that
+  silently copies the whole vault, including voice recordings, is still a
+  copy the user did not explicitly approve as a vault export.
+
+  ALTERNATIVE — allowBackup=false (STRONGER, and preferred for a vault app):
+    android:allowBackup="false" in AndroidManifest.xml disables Auto Backup
+    entirely. These rules still matter for device-transfer, which is a
+    separate mechanism, so keep both: allowBackup=false AND these rules.
+    If allowBackup is ever flipped back to true by mistake, the vault is
+    still excluded instead of silently uploaded.
+
+  What is deliberately NOT included here: no <include> block grants backup
+  to any database, file, or preference that holds memories, voice, or
+  session state. If a future feature adds a new vault file, add its
+  <exclude> here AND in backup_rules.xml in the same commit, and say so in
+  the commit message — an exclusion list that is not updated is a leak.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <!-- Room database + journal/WAL sidecars. -->
+        <exclude domain="database" path="lifevault_database" />
+        <exclude domain="database" path="lifevault_database-journal" />
+        <exclude domain="database" path="lifevault_database-wal" />
+        <exclude domain="database" path="lifevault_database-shm" />
+        <!-- Safety net: any database file, whatever it is called. -->
+        <exclude domain="database" path="." />
+        <!-- Voice recordings: filesDir/voice_vault/. -->
+        <exclude domain="file" path="voice_vault" />
+        <!-- Session prefs ("lifevault_local_session") and draft autosaves
+             ("lifevault_drafts"). -->
+        <exclude domain="sharedpref" path="lifevault_local_session.xml" />
+        <exclude domain="sharedpref" path="lifevault_drafts.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="database" path="." />
+        <exclude domain="file" path="voice_vault" />
+        <exclude domain="sharedpref" path="lifevault_local_session.xml" />
+        <exclude domain="sharedpref" path="lifevault_drafts.xml" />
+    </device-transfer>
+</data-extraction-rules>
