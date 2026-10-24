@@ -15,6 +15,7 @@ const appJs = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
 const kt = fs.readFileSync(path.join(root, 'android-improvements/kotlin/com/lifevault/intelligence/LocalIntelligence.kt'), 'utf8');
+const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
 
 let passed = 0;
 function check(name, fn) { fn(); passed++; console.log('ok - ' + name); }
@@ -115,6 +116,54 @@ check('Kotlin mood set matches web v2 (8 moods, no ANGRY enum value)', () => {
   }
   assert(!/Mood\.ANGRY/.test(kt), 'ANGRY still used as a mood value in code');
   assert(!/enum class Mood \{[^}]*ANGRY/.test(kt), 'ANGRY still in Mood enum');
+});
+
+
+// --- Retest Agent A + P0 audit checks (added during retest, not in Round 2) ---
+check('P0-1: unlock wording + PIN-is-lock-not-encryption warning', () => {
+  assert(appJs.includes('cannot be opened in the app'), 'cannot-be-opened wording missing in app.js');
+  assert(html.includes('cannot be opened in the app'), 'cannot-be-opened wording missing in index.html');
+  assert(appJs.includes('The PIN is a lock, not encryption') && html.includes('The PIN is a lock, not encryption') && readme.includes('The PIN is a lock, not encryption'), 'PIN-is-lock warning missing somewhere');
+});
+check('P0-2: export defaults to password-protected + explicit unprotected warning', () => {
+  assert(html.includes('id="encryptExport" checked'), 'export is not checked by default');
+  assert(html.includes('id="exportWarning"'), 'export warning element missing');
+  assert(appJs.includes('This backup will be readable by anyone with the file'), 'unprotected export warning text missing');
+});
+check('P0-3: cloud claim qualified in meta, About and README', () => {
+  assert(html.includes('This app itself makes no cloud calls'), 'meta cloud qualification missing');
+  assert(appJs.includes('itself makes no cloud calls'), 'About/onboarding cloud qualification missing');
+  assert(readme.includes('This app itself makes no cloud calls'), 'README cloud qualification missing');
+});
+check('P0-4: lockout persisted across reload', () => {
+  assert(appJs.includes("LS+'_lockUntil'") && appJs.includes("localStorage.setItem(LS+'_lockUntil'"), 'lockout persistence missing');
+});
+check('P0-5: manual mood change clears suggested confidence', () => {
+  assert(appJs.includes("delete $('#cMood').dataset.conf"), 'manual mood does not clear dataset.conf');
+});
+check('P0-6: gzip decompressed cap + >5000 import warning', () => {
+  assert(appJs.includes('50*1024*1024) return null'), 'gzip decompressed cap missing');
+  assert(appJs.includes('only the first 5000 were imported'), '>5000 import warning missing');
+});
+check('P0-7: integrity claim reworded (SHA-256 corruption / AES-GCM auth)', () => {
+  assert(html.includes('SHA-256 corruption check (unencrypted files); AES-GCM authentication (password-protected files)'), 'integrity rewording missing in index.html');
+  assert(!appJs.includes('tampered with'), 'blanket tamper-proof wording still present');
+});
+check('P0-8: PIN-less profile warning + word-boundary person matching', () => {
+  assert(appJs.includes('No PIN - anyone opening this app can open this profile'), 'PIN-less warning missing');
+  assert(appJs.includes('RegExp(') && appJs.includes('escP'), 'word-boundary person regex missing');
+  const re = new RegExp('\\bAna\\b', 'i');
+  assert(!re.test('banana') && re.test('with Ana,'), 'word-boundary regex does not behave as expected');
+});
+check('Retest: unlock renders Home (boot-locked case)', () => {
+  assert(appJs.includes("$('#lockScreen').classList.add('hidden'); renderHome();"), 'unlock does not render Home');
+});
+check('Retest: Capture navigation no longer wipes an autosaved draft', () => {
+  assert(!appJs.includes("if(v==='capture'){clearCapture();"), 'old draft-wiping nav handler still present');
+});
+check('Retest: multi-word negation (not looking back is not Reflective)', () => {
+  const s = suggestMood('I am not looking back at all');
+  assert(!s || s.mood !== 'Reflective', 'negated looking back classified as Reflective, got ' + JSON.stringify(s));
 });
 
 console.log('\n' + passed + ' checks passed.');

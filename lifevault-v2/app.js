@@ -22,7 +22,7 @@ function suggestMood(text){
       const parts=w.split(' ');
       raw.forEach((tok,i)=>{
         if(parts.length===1&&tok===parts[0]){const win=raw.slice(Math.max(0,i-3),i); if(!win.includes('not')&&!win.includes('never')&&!win.includes('no')) scores[mood]++;}
-        if(parts.length===2&&raw[i]===parts[0]&&raw[i+1]===parts[1]) scores[mood]+=2;
+        if(parts.length===2&&raw[i]===parts[0]&&raw[i+1]===parts[1]){const win=raw.slice(Math.max(0,i-3),i); if(!win.includes('not')&&!win.includes('never')&&!win.includes('no')) scores[mood]+=2;}
       });
     });
   });
@@ -129,8 +129,8 @@ $('#deleteBtn').onclick=()=>{pendingDeleteId=currentDetailId; $('#confirmTitle')
 $('#confirmNo').onclick=()=>{$('#confirmModal').classList.add('hidden'); pendingDeleteId=null; pendingVaultDelete=false;};
 $('#confirmYes').onclick=async()=>{
   $('#confirmModal').classList.add('hidden');
-  if(pendingVaultDelete){const p=activeProfile(); if(p){const doomed=store.entries.filter(e=>e.profileId===p.id); for(const e of doomed) await purgeEntryMedia(e); if(lastDeleted&&lastDeleted.profileId===p.id) lastDeleted=null; store.entries=store.entries.filter(e=>e.profileId!==p.id);} try{saveVerified();}catch(e){} pendingVaultDelete=false; renderMore(); renderHome(); showSnackbar('Vault deleted for this profile, including its photos and voice files.',false); return;}
-  if(pendingDeleteId){const idx=store.entries.findIndex(x=>x.id===pendingDeleteId); if(idx>=0){lastDeleted=store.entries[idx]; store.entries.splice(idx,1); try{saveVerified();}catch(e){} $('#detailModal').classList.add('hidden'); renderEntries(); renderHome(); showSnackbar('Entry deleted.',true);} pendingDeleteId=null;}
+  if(pendingVaultDelete){const p=activeProfile(); if(p){const doomed=store.entries.filter(e=>e.profileId===p.id); for(const e of doomed) await purgeEntryMedia(e); if(lastDeleted&&lastDeleted.profileId===p.id){await purgeEntryMedia(lastDeleted); lastDeleted=null;} store.entries=store.entries.filter(e=>e.profileId!==p.id);} try{saveVerified();}catch(e){} pendingVaultDelete=false; renderMore(); renderHome(); showSnackbar('Vault deleted for this profile, including its photos and voice files.',false); return;}
+  if(pendingDeleteId){const idx=store.entries.findIndex(x=>x.id===pendingDeleteId); if(idx>=0){if(lastDeleted) await purgeEntryMedia(lastDeleted); lastDeleted=store.entries[idx]; store.entries.splice(idx,1); try{saveVerified();}catch(e){} $('#detailModal').classList.add('hidden'); renderEntries(); renderHome(); showSnackbar('Entry deleted.',true);} pendingDeleteId=null;}
 };
 
 // ---------- insights: computed ONLY from the user's own data ----------
@@ -179,7 +179,7 @@ function renderTimeline(){
 }
 // ---------- capture: draft, edit, tag suggestions, voice, photo ----------
 function fillCapture(e){
-  $('#cTitle').value=e.title||''; $('#cBody').value=e.body||''; $('#cTranscript').value=e.transcript||''; $('#cTags').value=(e.tags||[]).join(', '); $('#cPeople').value=(e.people||[]).join(', '); $('#cLocation').value=e.location||''; $('#cCapsule').value=e.capsuleDate||''; $('#cPin').checked=!!e.pinned; $('#cMood').value=e.mood||'';
+  $('#cTitle').value=e.title||''; $('#cBody').value=e.body||''; $('#cTranscript').value=e.transcript||''; $('#cTags').value=(e.tags||[]).join(', '); $('#cPeople').value=(e.people||[]).join(', '); $('#cLocation').value=e.location||''; $('#cCapsule').value=e.capsuleDate||''; $('#cPin').checked=!!e.pinned; $('#cMood').value=e.mood||''; if(e.mood){$('#cMood').dataset.source=e.moodSource||'manual'; if(e.moodConfidence) $('#cMood').dataset.conf=e.moodConfidence; else delete $('#cMood').dataset.conf;} else {delete $('#cMood').dataset.source; delete $('#cMood').dataset.conf;}
   $('#moodHint').textContent=e.mood?('Mood: '+e.mood+' ('+(e.moodSource||'manual')+')'):'';
   $('#captureTitle').textContent='Edit entry'; $('#cancelEditBtn').classList.remove('hidden');
 }
@@ -191,7 +191,7 @@ function suggestTags(){
   const found=new Set();
   (text.match(/#[\w-]+/g)||[]).forEach(h=>found.add(h.slice(1).toLowerCase()));
   const knownPeople=new Set(); myEntries().forEach(e=>(e.people||[]).forEach(p=>knownPeople.add(p)));
-  knownPeople.forEach(p=>{if(p&&text.toLowerCase().includes(p.toLowerCase())) found.add('person:'+p);});
+  knownPeople.forEach(p=>{if(!p) return; const escP=p.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); if(new RegExp('\\b'+escP+'\\b','i').test(text)) found.add('person:'+p);});
   const topic=['family','beach','birthday','travel','work','school','food','music','garden','rain']; topic.forEach(t=>{if(text.toLowerCase().includes(t)) found.add(t);});
   const existing=new Set($('#cTags').value.split(',').map(s=>s.trim().toLowerCase()).filter(Boolean));
   const list=[...found].filter(x=>!existing.has(x.replace('person:','').toLowerCase()));
@@ -205,7 +205,7 @@ $('#suggestMoodBtn').onclick=()=>{
   // Mark as suggested until user changes the select manually
   $('#cMood').dataset.source='suggested'; $('#cMood').dataset.conf=s.confidence;
 };
-$('#cMood').onchange=()=>{$('#cMood').dataset.source='manual'; $('#moodHint').textContent='Mood set manually: '+$('#cMood').value;};
+$('#cMood').onchange=()=>{delete $('#cMood').dataset.conf; $('#cMood').dataset.source='manual'; $('#moodHint').textContent='Mood set manually: '+$('#cMood').value;};
 $('#captureForm').addEventListener('input',()=>{clearTimeout(draftTimer); draftTimer=setTimeout(()=>{saveDraft(); suggestTags();},600);});
 $('#discardDraftBtn').onclick=()=>{clearCapture(); showSnackbar('Draft discarded.',false);};
 $('#cancelEditBtn').onclick=()=>{clearCapture(); goto('entries');};
@@ -238,6 +238,7 @@ $('#cPhoto').onchange=async ev=>{
 // ---------- voice: real MediaRecorder pause/resume + append-only transcription ----------
 function setRecUI(state){$('#recBtn').textContent=state==='rec'?'● Recording…':'● Start recording'; $('#pauseBtn').disabled=state!=='rec'; $('#pauseBtn').textContent='⏸ Pause'; $('#stopBtn').disabled=state==='idle';}
 $('#recBtn').onclick=async()=>{
+  if(rec&&rec.state!=='inactive'){showSnackbar('A recording is already in progress.',false); return;}
   try{const stream=await navigator.mediaDevices.getUserMedia({audio:true}); rec=new MediaRecorder(stream); recChunks=[]; recPausedMs=0;
     rec.ondataavailable=e=>{if(e.data.size) recChunks.push(e.data);};
     rec.onstop=()=>{clearInterval(recTimerInt); audioBlob=new Blob(recChunks,{type:rec.mimeType||'audio/webm'}); stream.getTracks().forEach(t=>t.stop()); setRecUI('idle'); showSnackbar('Recording saved to this entry (not uploaded).',false);};
@@ -284,15 +285,15 @@ $('#unlockBtn').onclick=async()=>{
   const p=activeProfile(); if(!p) return;
   if(Date.now()<lockUntil){$('#pinError').textContent='Too many failed attempts. Try again in '+Math.ceil((lockUntil-Date.now())/1000)+'s.'; return;}
   const pin=$('#pinInput').value; const ok=await verifyPin(pin,p); $('#pinInput').value='';
-  if(ok){unlocked=true; failedAttempts=0; $('#lockScreen').classList.add('hidden'); renderReminders(); scheduleReflection();}
-  else{failedAttempts++; if(failedAttempts>=5){lockUntil=Date.now()+30000; failedAttempts=0; $('#pinError').textContent='5 failed attempts — locked for 30 seconds.';} else $('#pinError').textContent='Wrong PIN. Attempt '+failedAttempts+' of 5.';}
+  if(ok){unlocked=true; failedAttempts=0; try{localStorage.removeItem(LS+'_lockUntil');}catch(e){} $('#lockScreen').classList.add('hidden'); renderHome(); renderReminders(); scheduleReflection();}
+  else{failedAttempts++; if(failedAttempts>=5){lockUntil=Date.now()+30000; try{localStorage.setItem(LS+'_lockUntil',String(lockUntil));}catch(e){} failedAttempts=0; $('#pinError').textContent='5 failed attempts — locked for 30 seconds.';} else $('#pinError').textContent='Wrong PIN. Attempt '+failedAttempts+' of 5.';}
 };
 $('#forgotBtn').onclick=()=>$('#recoveryBox').classList.toggle('hidden');
 $('#recoverBtn').onclick=async()=>{
   const p=activeProfile(); if(!p||!p.recoveryHash){alert('No recovery key was set for this profile.'); return;}
   const key=$('#recoveryInput').value; const newPin=$('#newPinInput').value;
   if(!newPin){alert('Enter a new PIN first.'); return;}
-  if(await verifyRecovery(key,p)){const r=await makePinRecord(newPin); p.pinHash=r.pinHash; p.pinSalt=r.pinSalt; $('#recoveryInput').value=''; $('#newPinInput').value=''; try{saveVerified();}catch(e){alert('Save failed.'); return;} unlocked=true; $('#lockScreen').classList.add('hidden'); renderReminders(); scheduleReflection(); showSnackbar('PIN reset with your recovery key.',false);}
+  if(await verifyRecovery(key,p)){const r=await makePinRecord(newPin); p.pinHash=r.pinHash; p.pinSalt=r.pinSalt; $('#recoveryInput').value=''; $('#newPinInput').value=''; try{saveVerified();}catch(e){alert('Save failed.'); return;} unlocked=true; try{localStorage.removeItem(LS+'_lockUntil');}catch(e){} $('#lockScreen').classList.add('hidden'); renderHome(); renderReminders(); scheduleReflection(); showSnackbar('PIN reset with your recovery key.',false);}
   else alert('That recovery key does not match. It does not log you in automatically.');
 };
 $('#createProfileBtn').onclick=async()=>{
@@ -304,7 +305,7 @@ $('#createProfileBtn').onclick=async()=>{
   // Verify the profile is actually readable back before claiming success
   const back=loadStore(); if(!back.profiles.find(x=>x.id===prof.id)){$('#profileMsg').textContent='Profile NOT created — verification failed.'; return;}
   $('#newProfilePin').value='';
-  $('#profileMsg').textContent='Profile created and verified. '+(shownKey?'Write down this recovery key (shown once — it is NOT stored by the app, only its hash is): '+shownKey:'No PIN set for this profile.');
+  $('#profileMsg').textContent='Profile created and verified. '+(shownKey?'Write down this recovery key (shown once — it is NOT stored by the app, only its hash is): '+shownKey:'No PIN - anyone opening this app can open this profile.');
   renderProfileSelect(); renderMore(); if(prof.pinHash) lockNow(); else {unlocked=true;}
 };
 function renderProfileSelect(){const s=$('#profileSelect'); s.innerHTML=''; store.profiles.forEach(p=>{const o=document.createElement('option'); o.value=p.id; o.textContent=p.name; if(p.id===store.activeProfileId) o.selected=true; s.appendChild(o);});}
@@ -314,7 +315,7 @@ $('#profileSelect').onchange=async()=>{
   store.activeProfileId=target.id; try{saveVerified();}catch(e){} unlocked=true; renderHome(); renderEntries(); renderReminders(); scheduleReflection();
 };
 function renderMore(){
-  const p=activeProfile(); $('#profileInfo').innerHTML=p?('<p><strong>'+esc(p.name)+'</strong>'+(p.email?' · '+esc(p.email):'')+'</p><p class="muted small">'+(p.pinHash?'PIN lock: on (hash only, never plaintext)':'PIN lock: off')+'</p>'):'<p>No profile yet — create one above.</p>';
+  const p=activeProfile(); $('#profileInfo').innerHTML=p?('<p><strong>'+esc(p.name)+'</strong>'+(p.email?' · '+esc(p.email):'')+'</p><p class="muted small">'+(p.pinHash?'PIN lock: on (hash only, never plaintext)':'PIN lock: off — No PIN - anyone opening this app can open this profile.')+'</p>'):'<p>No profile yet — create one above.</p>';
   $('#lastBackup').textContent='Last backup: '+(store.lastBackup?new Date(store.lastBackup).toLocaleString():'never');
   $('#themeSel').value=store.settings.theme||'system'; $('#textSizeSel').value=store.settings.textSize||'1';
   $('#recoveryNote').textContent=p&&p.recoveryHash?'Recovery key: shown once at setup and NOT stored by the app (only its hash is kept). Keep your written copy safe — it is the only way back if you forget your PIN.':'No recovery key on file for this profile.';
@@ -336,7 +337,7 @@ $('#deleteVaultBtn').onclick=()=>{pendingVaultDelete=true; $('#confirmTitle').te
 let obStepIdx=0;
 function renderOnboarding(){
   const box=$('#obStep');
-  if(obStepIdx===0){box.innerHTML='<h2>1 · Our privacy promise, in plain words</h2><p>Your entries stay on <strong>this device</strong> in your browser. This app makes <strong>no cloud calls, has no server account, no sync, no analytics and no ads</strong>. The one exception: if you use live voice transcription, your <em>browser’s</em> speech service may process audio — that is the browser’s service, not ours, and it may vary by device.</p>';}
+  if(obStepIdx===0){box.innerHTML='<h2>1 · Our privacy promise, in plain words</h2><p>Your entries stay on <strong>this device</strong> in your browser. This app itself makes <strong>no cloud calls, has no server account, no sync, no analytics and no ads</strong>. The one exception: if you use live voice transcription, your <em>browser’s</em> speech service may process audio — that is the browser’s service, not ours, and it may vary by device.</p><p><strong>The PIN is a lock, not encryption</strong> — entries are stored in plaintext in browser storage, so anyone with device/browser access can read them.</p>';}
   if(obStepIdx===1){box.innerHTML='<h2>2 · How do you want to start?</h2><p>Choose a default. You can switch any time with the Capture tabs.</p><div class="row"><button class="btn primary" id="obWrite">✍️ Write first</button><button class="btn secondary" id="obVoice">🎙️ Voice first</button></div>'; setTimeout(()=>{$('#obWrite').onclick=()=>{captureTab='write'; obStepIdx++; renderOnboarding();}; $('#obVoice').onclick=()=>{captureTab='voice'; obStepIdx++; renderOnboarding();};},0);}
   if(obStepIdx===2){box.innerHTML='<h2>3 · A prompt, and a sample you can delete</h2><p>Today’s prompt: <strong>'+esc(todayPrompt())+'</strong></p><p>A sample entry will be added so you can see how entries look. You can delete it any time — it is marked “Sample”.</p><label for="obName">Your name (only this is required)</label><input id="obName" placeholder="Your name"><label for="obPin">PIN (optional, recommended)</label><input id="obPin" inputmode="numeric" placeholder="Optional PIN">';}
   $('#obBack').style.visibility=obStepIdx===0?'hidden':'visible';
@@ -353,11 +354,11 @@ $('#obNext').onclick=async()=>{
   store.entries.push({id:sampleId,profileId:prof.id,type:'write',title:'Welcome to LifeVault',body:'This is a sample entry. Try editing it, searching for it, or deleting it — it is yours to practise with. '+todayPrompt(),mood:'Grateful',moodSource:'manual',moodConfidence:null,tags:['welcome'],people:[],location:'',capsuleDate:'',pinned:false,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),isSample:true});
   store.onboarded=true;
   try{saveVerified();}catch(e){store.profiles=store.profiles.filter(x=>x.id!==prof.id); store.entries=store.entries.filter(x=>x.id!==sampleId); store.onboarded=false; alert('Setup NOT completed — save failed, so no success is claimed.'); return;}
-  $('#onboarding').classList.add('hidden'); if(shownKey) alert('Your recovery key (shown once — write it down, it is NOT stored by the app): '+shownKey+'\nWithout your PIN and without this key, the vault cannot be unlocked.');
-  renderProfileSelect(); if(prof.pinHash) lockNow(); else unlocked=true; goto('home');
+  $('#onboarding').classList.add('hidden'); if(shownKey) alert('Your recovery key (shown once — write it down, it is NOT stored by the app): '+shownKey+'\nWithout your PIN and without this key, the vault cannot be opened in the app. The PIN is a lock, not encryption — entries are stored in plaintext in browser storage, so anyone with device/browser access can read them.');
+  renderProfileSelect(); if(prof.pinHash) lockNow(); else {unlocked=true; goto('home'); if(!pin) showSnackbar('No PIN - anyone opening this app can open this profile.',false);}
 };
 
-// ---------- export / import: FILE, with media, integrity, 50MB cap, v1 fallback ----------
+// ---------- export / import: FILE, with media, SHA-256 corruption check / AES-GCM authentication, 50MB cap, v1 fallback ----------
 async function encryptJSON(text,pw){
   const salt=crypto.getRandomValues(new Uint8Array(16)), iv=crypto.getRandomValues(new Uint8Array(12));
   const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(pw),'PBKDF2',false,['deriveKey']);
@@ -374,6 +375,7 @@ async function decryptJSON(obj,pw){
 }
 function download(name,text){const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([text],{type:'application/json'})); a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),5000);}
 /* Export password is collected in the in-page dialog (see askExportPassword), never inline. */
+$('#encryptExport').onchange=()=>{$('#exportWarning').classList.toggle('hidden',$('#encryptExport').checked);};
 $('#exportBtn').onclick=async()=>{
   const p=activeProfile(); if(!p) return;
   const entries=myEntries(); const media={photos:{},audio:{}};
@@ -383,6 +385,7 @@ $('#exportBtn').onclick=async()=>{
   }
   const inner={format:'lifevault-v2',version:2,exportedAt:new Date().toISOString(),profile:{name:p.name,email:p.email||''},entries,media};
   const innerStr=JSON.stringify(inner); inner.checksum=await sha256(innerStr);
+  if(!$('#encryptExport').checked){if(!confirm('This backup will be readable by anyone with the file - tick password-protect to lock it. Continue with an unprotected backup?')){showSnackbar('Export cancelled.',false); return;}}
   let out=JSON.stringify(inner);
   if($('#encryptExport').checked){let pw=await askExportPassword(); if(!pw){showSnackbar('Export cancelled.',false); return;} try{out=JSON.stringify(await encryptJSON(out,pw));}finally{pw='';}}
   download('lifevault-backup-'+new Date().toISOString().slice(0,10)+'.json',out);
@@ -392,7 +395,7 @@ async function parseV1(text){
   // v1 "export" was a clipboard Base64 blob, not a file. Try Base64-decoded JSON, and gzip via DecompressionStream if present.
   try{const dec=atob(text.trim()); const j=JSON.parse(dec); return j;}catch(e){}
   try{const j=JSON.parse(text); return j;}catch(e){}
-  if(window.DecompressionStream){try{const ds=new DecompressionStream('gzip'); const s=new Blob([Uint8Array.from(atob(text.trim()),c=>c.charCodeAt(0))]).stream().pipeThrough(ds); const out=await new Response(s).text(); return JSON.parse(out);}catch(e){}}
+  if(window.DecompressionStream){try{const ds=new DecompressionStream('gzip'); const s=new Blob([Uint8Array.from(atob(text.trim()),c=>c.charCodeAt(0))]).stream().pipeThrough(ds); const out=await new Response(s).text(); if(out.length>50*1024*1024) return null; return JSON.parse(out);}catch(e){}}
   return null;
 }
 $('#importFile').onchange=async ev=>{
@@ -404,11 +407,12 @@ $('#importFile').onchange=async ev=>{
   if(obj.encrypted){let pw=await askImportPassword(); if(!pw){$('#importMsg').textContent='Import cancelled.'; return;} try{text=await decryptJSON(obj,pw); if(text.length>50*1024*1024){$('#importMsg').textContent='Import rejected: decrypted content is over the 50 MB cap.'; return;} obj=JSON.parse(text);}catch(e){if($('#importMsg').textContent==='Import cancelled.') return; $('#importMsg').textContent='Import rejected: wrong password or corrupt encrypted file.'; return;}finally{pw='';}}
   const entries=obj.entries||obj.data||[]; if(!Array.isArray(entries)){$('#importMsg').textContent='Import rejected: no entries array found.'; return;}
   // Integrity check for v2 files: checksum was computed over the inner object before the checksum field was added (added last, so deleting it restores the original key order).
-  if(obj.format==='lifevault-v2'&&obj.checksum){const copy={...obj}; delete copy.checksum; const recomputed=await sha256(JSON.stringify(copy)); if(recomputed!==obj.checksum){$('#importMsg').textContent='Import rejected: integrity check failed — file may be truncated or tampered with.'; return;}}
+  if(obj.format==='lifevault-v2'&&obj.checksum){const copy={...obj}; delete copy.checksum; const recomputed=await sha256(JSON.stringify(copy)); if(recomputed!==obj.checksum){$('#importMsg').textContent='Import rejected: corruption check failed — file may be truncated or corrupted. (SHA-256 corruption check for unencrypted files; AES-GCM authentication for password-protected files.)'; return;}}
   const p=activeProfile(); if(!p){$('#importMsg').textContent='Create a profile first.'; return;}
   let restored=0, skipped=0, missing=0, mediaRestored=0;
+  const totalEntries=entries.length; const truncated=totalEntries>5000;
   for(const raw of entries.slice(0,5000)){
-    const e={id:raw.id||uid(),profileId:p.id,type:raw.type||'write',title:raw.title||'',body:raw.body||raw.text||'',transcript:raw.transcript||'',mood:raw.mood||'',moodSource:raw.moodSource||'manual',moodConfidence:raw.moodConfidence||null,tags:raw.tags||[],people:raw.people||[],location:raw.location||'',capsuleDate:raw.capsuleDate||'',pinned:!!raw.pinned,createdAt:raw.createdAt||new Date().toISOString(),updatedAt:new Date().toISOString(),isSample:false};
+    const e={id:raw.id||uid(),profileId:p.id,type:raw.type||'write',title:raw.title||'',body:raw.body||raw.content||raw.text||'',transcript:raw.transcript||'',mood:raw.mood||'',moodSource:raw.moodSource||'manual',moodConfidence:raw.moodConfidence||null,tags:(Array.isArray(raw.tags)?raw.tags:String(raw.tags||'').split(',').map(s=>s.trim()).filter(Boolean)),people:(Array.isArray(raw.people)?raw.people:String(raw.people||'').split(',').map(s=>s.trim()).filter(Boolean)),location:raw.location||'',capsuleDate:raw.capsuleDate||'',pinned:!!raw.pinned,createdAt:raw.createdAt||new Date().toISOString(),updatedAt:new Date().toISOString(),isSample:false};
     if(raw.photoId) e.photoId=raw.photoId; if(raw.audioId) e.audioId=raw.audioId;
     if(store.entries.find(x=>x.id===e.id)){skipped++; continue;}
     store.entries.push(e);
@@ -421,7 +425,7 @@ $('#importFile').onchange=async ev=>{
     } else if(e.photoId||e.audioId) missing++;
   }
   try{saveVerified();}catch(err){$('#importMsg').textContent='Import NOT saved — save failed.'; return;}
-  $('#importMsg').textContent=restored+' entries restored'+(skipped?' ('+skipped+' duplicates skipped)':'')+', '+mediaRestored+' media files restored, '+missing+' media files missing. '+(missing?'Missing files are reported honestly: those entries keep their text, but their photo/voice cannot be shown.':'');
+  $('#importMsg').textContent=restored+' entries restored'+(truncated?' (note: file contained '+totalEntries+' entries; only the first 5000 were imported)':'')+(skipped?' ('+skipped+' duplicates skipped)':'')+', '+mediaRestored+' media files restored, '+missing+' media files missing. '+(missing?'Missing files are reported honestly: those entries keep their text, but their photo/voice cannot be shown.':'');
   renderEntries(); renderHome();
 };
 // ---------- in-page password dialogs (ROUND 2: no browser prompt anywhere) ----------
@@ -489,11 +493,11 @@ $('#themeSel').onchange=()=>{store.settings.theme=$('#themeSel').value; try{save
 $('#textSizeSel').onchange=()=>{store.settings.textSize=$('#textSizeSel').value; try{saveVerified();}catch(e){} applyTheme();};
 function applyTheme(){document.documentElement.dataset.theme=store.settings.theme||'system'; document.documentElement.style.setProperty('--fs',store.settings.textSize||'1');}
 $('#remCapsule').onchange=saveReminderSettings; $('#remDaily').onchange=saveReminderSettings; $('#remDailyTime').onchange=saveReminderSettings;
-$('#kidsToggle').onclick=()=>{store.settings.kidsMode=!store.settings.kidsMode; try{saveVerified();}catch(e){} document.body.classList.toggle('kids',store.settings.kidsMode); renderMore(); renderHome(); showSnackbar('Kids Mode: '+(store.settings.kidsMode?'simplified shell on — advanced panels hidden, no drawing offered (drawing is not built in v2).':'off'),false);};
+$('#kidsToggle').onclick=()=>{store.settings.kidsMode=!store.settings.kidsMode; try{saveVerified();}catch(e){} document.body.classList.toggle('kids',store.settings.kidsMode); renderMore(); renderHome(); showSnackbar('Kids Mode: '+(store.settings.kidsMode?'simplified Home insights on — no drawing offered (drawing is not built in v2).':'off'),false);};
 $('#aboutBtn').onclick=()=>{alert($('#aboutText').textContent);};
-function setAbout(){$('#aboutText').textContent='Round 2: PINs and recovery keys are stored only as salted PBKDF2 hashes (100,000 iterations) — never as plaintext, and a recovery key is shown once at setup and then NOT stored by the app at all. This web v2 is a separate, honest demo/rebuild — it is NOT the original Android code, and it makes no cloud calls. The original Android APK is a different build. This v2 has no server account, no cloud sync, no analytics and no ads. Photos are included; video is NOT included in v2. Kids Mode is a simplified shell only — it does not offer drawing, because drawing content was not built to actually save in v1 and is not offered here either. There is no “Compact” button in v2: a no-op button was removed rather than repeated. Backup/restore includes voice and photo files, and honestly reports missing files.';}
-$$('[data-goto]').forEach(b=>b.onclick=()=>{const v=b.dataset.goto; if(v==='capture'){clearCapture(); gotoCapture(captureTab);} else goto(v);});
-$$('[data-goto-capture]').forEach(b=>b.onclick=()=>{clearCapture(); gotoCapture('write');});
+function setAbout(){$('#aboutText').textContent='Round 2: PINs and recovery keys are stored only as salted PBKDF2 hashes (100,000 iterations) — never as plaintext, and a recovery key is shown once at setup and then NOT stored by the app at all. The PIN is a lock, not encryption — entries are stored in plaintext in browser storage, so anyone with device/browser access can read them. This web v2 is a separate, honest demo/rebuild — it is NOT the original Android code, and it itself makes no cloud calls; browser live transcription may send audio to the browser speech service. The original Android APK is a different build. This v2 has no server account, no cloud sync, no analytics and no ads. Photos are included; video is NOT included in v2. Kids Mode simplifies Home insights only (there is no separate kids CSS/layout) — it does not offer drawing, because drawing content was not built to actually save in v1 and is not offered here either. There is no “Compact” button in v2: a no-op button was removed rather than repeated. Backup/restore includes voice and photo files, and honestly reports missing files.';}
+$$('[data-goto]').forEach(b=>b.onclick=()=>{const v=b.dataset.goto; if(v==='capture'){if(editingId) clearCapture(); else {clearTimeout(draftTimer); try{saveDraft();}catch(e){}} gotoCapture(captureTab);} else {if(!$('#view-capture').classList.contains('hidden')){clearTimeout(draftTimer); try{saveDraft();}catch(e){}} goto(v);}});
+$$('[data-goto-capture]').forEach(b=>b.onclick=()=>{if(editingId) clearCapture(); else {clearTimeout(draftTimer); try{saveDraft();}catch(e){}} gotoCapture('write');});
 $$('[data-cap-tab]').forEach(b=>b.onclick=()=>setCapTab(b.dataset.capTab));
 ['#q','#fMood','#fType','#fPerson','#fFrom','#fTo'].forEach(s=>{const el=$(s); if(el) el.addEventListener('input',renderEntries);});
 if('serviceWorker' in navigator && location.protocol!=='file:'){navigator.serviceWorker.register('sw.js').catch(()=>{});}
@@ -504,5 +508,5 @@ if('serviceWorker' in navigator && location.protocol!=='file:'){navigator.servic
   // Restore draft if any
   try{const d=JSON.parse(localStorage.getItem(LS+'_draft')||'null'); if(d){$('#cTitle').value=d.title||''; $('#cBody').value=d.body||''; $('#cTranscript').value=d.transcript||''; $('#cTags').value=d.tags||''; $('#cPeople').value=d.people||''; $('#cLocation').value=d.location||''; $('#cCapsule').value=d.capsule||''; $('#cMood').value=d.mood||''; $('#cPin').checked=!!d.pin;}}catch(e){}
   if(!store.onboarded||!store.profiles.length){obStepIdx=0; renderOnboarding(); $('#onboarding').classList.remove('hidden'); return;}
-  renderMore(); const p=activeProfile(); if(p&&p.pinHash){lockNow();} else {unlocked=true; goto('home'); scheduleReflection();}
+  try{const saved=Number(localStorage.getItem(LS+'_lockUntil')); if(saved>Date.now()) lockUntil=saved; else if(saved) localStorage.removeItem(LS+'_lockUntil');}catch(e){} renderMore(); const p=activeProfile(); if(p&&p.pinHash){lockNow();} else {unlocked=true; goto('home'); scheduleReflection();}
 })();

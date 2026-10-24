@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LifeVault — Your Life. Your Memories. Forever.</title>
-<meta name="description" content="LifeVault v2: a local-first, honest web rebuild. No cloud calls, no accounts, no ads.">
+<meta name="description" content="LifeVault v2: a local-first, honest web rebuild. This app itself makes no cloud calls; browser live transcription may send audio to your browser's speech service. No accounts, no ads.">
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#5b4a8a">
 <link rel="stylesheet" href="styles.css">
@@ -38,9 +38,9 @@
       <label for="newPinInput">New PIN</label>
       <input id="newPinInput" type="password" inputmode="numeric" autocomplete="off" placeholder="New PIN">
       <button id="recoverBtn" class="btn primary">Reset PIN with recovery key</button>
-      <p class="muted small">Honest note: without your PIN <em>and</em> without your recovery key, this vault cannot be unlocked. There is no backdoor and no “forgot PIN” that logs you in automatically.</p>
+      <p class="muted small">Honest note: without your PIN <em>and</em> without your recovery key, this vault cannot be opened in the app. There is no backdoor and no “forgot PIN” that logs you in automatically.</p>
     </div>
-    <p class="muted small">Locked automatically when this tab is hidden.</p>
+    <p class="muted small">Locked automatically when this tab is hidden.</p><p class="muted small">The PIN is a lock, not encryption — entries are stored in plaintext in browser storage, so anyone with device/browser access can read them.</p>
   </div>
 </div>
 
@@ -155,12 +155,12 @@
     </div>
     <div class="card"><h2>Backup — file export / import (not clipboard)</h2>
       <p id="lastBackup" class="muted">Last backup: never</p>
-      <label><input type="checkbox" id="encryptExport"> Password-protect export (AES-GCM + PBKDF2)</label>
+      <label><input type="checkbox" id="encryptExport" checked> Password-protect export (AES-GCM + PBKDF2)</label>
       <p class="muted small">If checked, an in-page dialog asks for the export password (with confirmation and show/hide). The password is cleared after use and is never stored.</p>
-      <button id="exportBtn" class="btn primary">⬇ Download backup file</button>
+      <p id="exportWarning" class="error hidden">This backup will be readable by anyone with the file - tick password-protect to lock it.</p><button id="exportBtn" class="btn primary">⬇ Download backup file</button>
       <label for="importFile">Import a backup file</label><input id="importFile" type="file" accept=".json,.txt,application/json">
       <p id="importMsg" role="status"></p>
-      <p class="muted small">Export includes entry text <em>and</em> photo/audio files bundled in the file. On restore, any referenced file that is missing is reported honestly as “N restored, K missing”. Imports are capped at 50 MB and integrity-checked. Older v1 Base64 exports are also accepted where readable.</p>
+      <p class="muted small">Export includes entry text <em>and</em> photo/audio files bundled in the file. On restore, any referenced file that is missing is reported honestly as “N restored, K missing”. Imports are capped at 50 MB and checked as follows: SHA-256 corruption check (unencrypted files); AES-GCM authentication (password-protected files). Older v1 Base64 exports are also accepted where readable.</p>
     </div>
     <div class="card"><h2>Reminders (opt-in, off by default, this device only)</h2>
       <label><input type="checkbox" id="remCapsule"> On app open, list time capsules whose date has passed</label>

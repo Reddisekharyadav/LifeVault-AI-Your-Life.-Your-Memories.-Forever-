@@ -1,3 +1,44 @@
+# LifeVault v2 — Retest (Agent A) + P0 audit fixes
+
+## Results before fixes
+- `node --check app.js` — PASS (before), `node --check sw.js` — PASS
+- `node tests/logic.test.js` — 18/18 PASS (before, Round 2 suite)
+- `python3 -m json.tool manifest.json` — PASS; backup XMLs parse — PASS
+- No live-browser test was possible in this retest either (see "What was NOT tested" below).
+
+## Results after fixes
+- `node --check app.js` — PASS, `node --check sw.js` — PASS
+- `node tests/logic.test.js` — 29/29 PASS (18 Round 2 checks + 11 new Retest/P0 checks added to the suite)
+- No network calls, API keys, or external CDNs added. No `prompt()` in app.js (the unprotected-export warning uses `confirm()`, not `prompt()`).
+- `android-improvements/` was NOT touched in this retest. Nothing was pushed to GitHub by this agent.
+
+## P0 fixes applied (Gemini-style audit, Agent C)
+1. **Unlock wording:** "cannot be unlocked" replaced everywhere (onboarding alert, lock screen, About/README/More) with "cannot be opened IN THE APP without your PIN or recovery key", plus the explicit sentence: "The PIN is a lock, not encryption — entries are stored in plaintext in browser storage, so anyone with device/browser access can read them."
+2. **Export default:** password-protect is now checked by default. Unchecking shows an in-page warning ("This backup will be readable by anyone with the file - tick password-protect to lock it.") and the export handler asks for confirmation before writing an unprotected file.
+3. **Cloud claim qualified:** meta description, onboarding, About, and README now say "This app itself makes no cloud calls; browser live transcription may send audio to your browser's speech service" (the voice panel already said the browser service may not be offline).
+4. **Lockout persisted:** the 30-second lockout is now stored in `localStorage` (`lifevault_v2_lockUntil`), restored on boot, and cleared on successful unlock / PIN reset, so reloading no longer resets it.
+5. **Manual mood confidence:** changing the mood select now deletes `dataset.conf`, so a manually chosen mood never shows a stale suggestion percentage. Editing an entry now restores its stored mood source/confidence, which a manual change then clears.
+6. **Import caps/warnings:** the v1 gzip decompression path now returns null if decompressed output exceeds 50 MB, and imports of more than 5,000 entries now report "file contained X entries; only the first 5000 were imported" instead of silently truncating.
+7. **Integrity reworded:** claims now read "SHA-256 corruption check (unencrypted files); AES-GCM authentication (password-protected files)" in index.html, README, code comments, and the import rejection message. No blanket "tamper-proof" wording remains in the web app.
+8. **PIN-less warning + word-boundary people:** "No PIN - anyone opening this app can open this profile." now appears on profile creation (no PIN), in More when the active profile has no PIN, and as a snackbar after PIN-less onboarding. Person tag suggestions now use word-boundary regex (escaped), so "Ana" no longer matches "banana".
+
+## Other real bugs found and fixed in this retest
+- **Unlock did not render Home:** after unlocking a PIN-locked vault (including at boot), Home greeting, prompts, On This Day, insights, and recent entries stayed empty until the user navigated away and back. Unlock and PIN-reset now call `renderHome()`.
+- **Draft wiped by Capture navigation:** the bottom-nav and prompt Capture buttons called `clearCapture()`, deleting an autosaved draft. They now only clear when cancelling an edit; otherwise they flush the pending draft (600 ms timer) instead of deleting it. Leaving Capture for another tab also flushes a pending draft.
+- **Superseded delete leaked media:** deleting a second entry while the first delete's Undo was still pending overwrote `lastDeleted` without purging the first entry's IndexedDB media. Deleting now purges a pending superseded entry's media first, and vault deletion does the same.
+- **Multi-word negation ignored:** "not looking back" still counted as Reflective (+2). Multi-word mood phrases now apply the same 3-token negation window as single words.
+- **Recording double-start:** tapping Start Recording while a recording was already active created a second MediaRecorder and lost the first stream. Start now refuses with "A recording is already in progress" if a recorder is not inactive.
+- **Import normalisation:** imported entries with string tags/people (v1-style) or a `content` field instead of `body` could break search/rendering (strings have no `.join()`). Import now normalises tags/people to arrays (comma-split if a string) and reads `body || content || text`.
+- **Kids Mode wording:** the toggle claimed "advanced panels hidden", but only Home insights are simplified and there is no kids CSS/layout. The toggle and About text now say Home insights only.
+- **Syntax regression caught by re-running checks:** an early P0 edit put an ASCII apostrophe ("browser's") inside a single-quoted JS string in `setAbout()`, breaking `node --check`. It was fixed to "browser speech service" and checks re-run to PASS. This is why the "after" numbers above are from a second run, not the first edit pass.
+
+## What was NOT tested (honest limits, unchanged from Round 2)
+- No live-browser DOM test: onboarding clicks, PIN unlock/lockout timing, MediaRecorder, Web Speech, IndexedDB photo/voice round-trip, service-worker offline load, Notification permission, and PBKDF2 end-to-end in a real browser were NOT exercised here. The manual checklist below is still the release gate for those.
+- Kotlin / Android code was not compiled or run (no JDK/SDK here), and was not touched.
+- The new `confirm()` export warning, the persisted lockout, and the draft-flush-on-navigation paths are covered only by static checks and code tracing, not by a live browser run. Verify them first in a real browser before release.
+
+---
+
 # LifeVault v2 — Tests (Round 2)
 
 ## Automated checks (run, no live browser)
