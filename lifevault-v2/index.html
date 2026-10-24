@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LifeVault — Your Life. Your Memories. Forever.</title>
+<meta name="description" content="LifeVault v2: a local-first, honest web rebuild. No cloud calls, no accounts, no ads.">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#5b4a8a">
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔒</text></svg>">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<!-- ONBOARDING -->
+<div id="onboarding" class="overlay hidden" role="dialog" aria-modal="true" aria-label="Welcome to LifeVault">
+  <div class="sheet">
+    <h1>LifeVault</h1><p class="tagline">Your life. Your memories. Forever — on this device.</p>
+    <div id="obStep"></div>
+    <div class="row"><button id="obBack" class="btn secondary">Back</button><button id="obNext" class="btn primary">Continue</button></div>
+  </div>
+</div>
+
+<!-- LOCK -->
+<div id="lockScreen" class="overlay hidden" role="dialog" aria-modal="true" aria-label="Vault locked">
+  <div class="sheet">
+    <h1>🔒 Vault locked</h1>
+    <p id="lockMsg">Enter your PIN to unlock this profile. Your PIN is never stored as plain text — only a salted PBKDF2 hash (100,000 iterations) is kept on this device.</p>
+    <label for="pinInput">PIN</label>
+    <input id="pinInput" type="password" inputmode="numeric" autocomplete="off" placeholder="Enter PIN" aria-label="PIN">
+    <p id="pinError" class="error" role="alert"></p>
+    <button id="unlockBtn" class="btn primary">Unlock</button>
+    <button id="forgotBtn" class="btn secondary">I forgot my PIN — use recovery key</button>
+    <div id="recoveryBox" class="hidden">
+      <label for="recoveryInput">Recovery key (shown once at setup)</label>
+      <input id="recoveryInput" autocomplete="off" placeholder="Enter recovery key">
+      <label for="newPinInput">New PIN</label>
+      <input id="newPinInput" type="password" inputmode="numeric" autocomplete="off" placeholder="New PIN">
+      <button id="recoverBtn" class="btn primary">Reset PIN with recovery key</button>
+      <p class="muted small">Honest note: without your PIN <em>and</em> without your recovery key, this vault cannot be unlocked. There is no backdoor and no “forgot PIN” that logs you in automatically.</p>
+    </div>
+    <p class="muted small">Locked automatically when this tab is hidden.</p>
+  </div>
+</div>
+
+<header class="topbar">
+  <div><strong>LifeVault</strong> <span class="badge">v2 · local</span></div>
+  <div class="row">
+    <select id="profileSelect" aria-label="Switch profile"></select>
+    <button id="kidsToggle" class="btn small" aria-label="Toggle Kids Mode">🧒 Kids Mode: Off</button>
+  </div>
+</header>
+
+<main id="main">
+  <!-- HOME -->
+  <section id="view-home" class="view" aria-label="Home">
+    <h1 id="greeting">Good day.</h1>
+    <p class="muted" id="homeSub"></p>
+    <div class="card" id="todayPromptCard"><h2>Today's prompt</h2><p id="todayPrompt"></p><button class="btn primary" data-goto-capture>Write about this →</button></div>
+    <div class="card hidden" id="capsuleCard"><h2>⏳ Time capsules ready</h2><p id="capsuleCount"></p><div id="capsuleList" class="row"></div><p class="muted small">Only titles are listed here. Nothing about a capsule is sent anywhere — there is no notification content beyond this in-app list.</p></div>
+    <div class="card hidden" id="reflectionCard"><h2>💭 A prompt for today</h2><p id="reflectionPrompt"></p><button class="btn primary" data-goto-capture>Write about this →</button><p class="muted small">Shown in-app because daily reminders are opt-in, or because notifications are unavailable or denied. No entry text is ever put in a notification.</p></div>
+    <div class="card"><h2>On This Day — from your own past entries</h2><div id="onThisDay"></div></div>
+    <div class="card"><h2>Your insights (computed locally, from your entries only)</h2><div id="insights"></div></div>
+    <div class="card"><h2>Local extracts — not generated</h2><p class="muted small">These are quotes from your own entries, selected by word overlap. No AI summary is generated.</p><div id="extracts"></div></div>
+    <div class="card"><h2>Recent entries</h2><div id="recentList"></div><button class="btn secondary" data-goto="entries">See all entries</button></div>
+  </section>
+
+  <!-- ENTRIES + SEARCH -->
+  <section id="view-entries" class="view hidden" aria-label="Entries">
+    <h1>Entries</h1>
+    <div class="card searchcard">
+      <label for="q">Search everything — titles, tags, people, places, transcripts</label>
+      <input id="q" type="search" placeholder="Try: coffee, beach, happy…" aria-label="Search entries">
+      <div class="filters">
+        <select id="fMood" aria-label="Filter by mood"><option value="">All moods</option><option>Happy</option><option>Calm</option><option>Grateful</option><option>Excited</option><option>Tired</option><option>Sad</option><option>Reflective</option><option>Anxious</option></select>
+        <select id="fType" aria-label="Filter by type"><option value="">All types</option><option value="write">Write</option><option value="voice">Voice</option><option value="photo">Photo</option></select>
+        <input id="fPerson" placeholder="Person" aria-label="Filter by person">
+        <label>From <input id="fFrom" type="date" aria-label="From date"></label>
+        <label>To <input id="fTo" type="date" aria-label="To date"></label>
+      </div>
+      <p class="muted small" id="searchNote">Search ranking: title ×3, tags &amp; people ×2, body / location / transcript ×1. Synonyms expanded (coffee → espresso, etc.).</p>
+    </div>
+    <div id="entryList"></div>
+    <div id="entriesEmpty" class="empty hidden"><p>No entries yet.</p><button class="btn primary" data-goto-capture>Capture your first memory</button></div>
+  </section>
+
+  <!-- TIMELINE -->
+  <section id="view-timeline" class="view hidden" aria-label="Timeline">
+    <h1>Timeline</h1>
+    <div class="card"><h2>Mood calendar — last 30 days</h2><div id="moodStrip" class="strip" aria-label="Mood calendar strip"></div></div>
+    <div id="timelineList"></div>
+    <div id="timelineEmpty" class="empty hidden"><p>Nothing on the timeline yet.</p><button class="btn primary" data-goto-capture>Capture a memory</button></div>
+  </section>
+
+  <!-- CAPTURE -->
+  <section id="view-capture" class="view hidden" aria-label="Capture">
+    <h1 id="captureTitle">Capture</h1>
+    <p class="muted small" id="draftNote">Draft autosaves to this device only.</p>
+    <div class="tabs" role="tablist" aria-label="Capture type">
+      <button class="tab active" data-cap-tab="write">✍️ Write</button>
+      <button class="tab" data-cap-tab="voice">🎙️ Voice</button>
+      <button class="tab" data-cap-tab="photo">📷 Photo</button>
+    </div>
+    <form id="captureForm" class="card">
+      <label for="cTitle">Title</label><input id="cTitle" placeholder="A title for this memory">
+      <label for="cBody">What happened?</label><textarea id="cBody" rows="6" placeholder="Write freely…"></textarea>
+      <div id="moodRow">
+        <label for="cMood">Mood (one set, everywhere)</label>
+        <select id="cMood" aria-label="Mood"><option value="">— No mood —</option><option>Happy</option><option>Calm</option><option>Grateful</option><option>Excited</option><option>Tired</option><option>Sad</option><option>Reflective</option><option>Anxious</option></select>
+        <button type="button" id="suggestMoodBtn" class="btn secondary">Suggest mood from text</button>
+        <p id="moodHint" class="muted small"></p>
+      </div>
+      <label for="cTags">Tags (comma separated)</label><input id="cTags" placeholder="family, beach">
+      <label for="cPeople">People (comma separated)</label><input id="cPeople" placeholder="Asha, Ravi">
+      <label for="cLocation">Location</label><input id="cLocation" placeholder="Where was this?">
+      <label for="cCapsule">Time capsule date (optional — revisit on this date)</label><input id="cCapsule" type="date">
+      <label><input type="checkbox" id="cPin"> 📌 Pin this entry</label>
+      <div id="tagSuggest" class="hidden"><h3>Suggested tags — tap to accept (never applied silently)</h3><div id="tagChips" class="chips"></div></div>
+
+      <div id="voicePanel" class="hidden panel">
+        <p class="notice">Voice transcription: <strong>On-device / browser transcription — may vary by device.</strong> Your browser may send audio to its own speech service. This app makes no cloud calls itself, but it cannot guarantee the browser's speech service is offline. Edit the transcript before sealing.</p>
+        <div class="row"><button type="button" id="recBtn" class="btn primary">● Start recording</button><button type="button" id="pauseBtn" class="btn secondary" disabled>⏸ Pause</button><button type="button" id="stopBtn" class="btn secondary" disabled>■ Stop</button><span id="recTimer" aria-live="polite">00:00</span></div>
+        <label for="cTranscript">Transcript (editable — final results are appended, never overwrite earlier dictation)</label><textarea id="cTranscript" rows="4" placeholder="Transcript appears here…"></textarea>
+        <p id="speechSupport" class="muted small"></p>
+      </div>
+
+      <div id="photoPanel" class="hidden panel">
+        <p class="notice">Photos are downscaled to max 1600px and re-encoded on this device. GPS is stripped by default — this app never reads EXIF GPS at all. Thumbnails are stored in IndexedDB, not as Base64 in your main entry data. <strong>Video is not included in v2.</strong></p>
+        <label for="cPhoto">Choose a photo</label><input id="cPhoto" type="file" accept="image/*">
+        <img id="photoPreview" class="hidden thumb-large" alt="Photo preview">
+      </div>
+
+      <div class="row"><button type="submit" id="saveBtn" class="btn primary">Save entry</button><button type="button" id="cancelEditBtn" class="btn secondary hidden">Cancel edit</button><button type="button" id="discardDraftBtn" class="btn secondary">Discard draft</button></div>
+      <p class="muted small">Saving happens only after the entry is written to this device. A “success” message is never shown before the save is verified.</p>
+    </form>
+  </section>
+
+  <!-- MORE -->
+  <section id="view-more" class="view hidden" aria-label="More">
+    <h1>More</h1>
+    <div class="card" id="profileCard"><h2>Profile</h2><div id="profileInfo"></div>
+      <label for="newProfileName">New profile name</label><input id="newProfileName" placeholder="Name (email optional below)">
+      <label for="newProfileEmail">Email (optional)</label><input id="newProfileEmail" type="email" placeholder="Optional">
+      <label for="newProfilePin">PIN for this profile (optional, but recommended)</label><input id="newProfilePin" type="password" inputmode="numeric" placeholder="Optional PIN">
+      <button id="createProfileBtn" class="btn primary">Create profile (only after verified save)</button>
+      <p id="profileMsg" role="status"></p>
+    </div>
+    <div class="card"><h2>Privacy &amp; Lock</h2>
+      <label for="setPin">Set / change PIN (requires current PIN if one is set)</label><input id="setPin" type="password" inputmode="numeric" placeholder="New PIN">
+      <input id="currentPin" type="password" inputmode="numeric" placeholder="Current PIN (if set)">
+      <button id="setPinBtn" class="btn primary">Save PIN</button>
+      <p class="muted small">PIN is stored only as a salted PBKDF2 hash (WebCrypto, 100,000 iterations) — never as plaintext. Older SHA-256-only profiles are upgraded to PBKDF2 on their next successful unlock, and the old hash is then discarded. 5 failed attempts = 30-second lockout. Auto-lock when the tab is hidden.</p>
+      <p id="recoveryNote" class="muted small"></p>
+    </div>
+    <div class="card"><h2>Backup — file export / import (not clipboard)</h2>
+      <p id="lastBackup" class="muted">Last backup: never</p>
+      <label><input type="checkbox" id="encryptExport"> Password-protect export (AES-GCM + PBKDF2)</label>
+      <p class="muted small">If checked, an in-page dialog asks for the export password (with confirmation and show/hide). The password is cleared after use and is never stored.</p>
+      <button id="exportBtn" class="btn primary">⬇ Download backup file</button>
+      <label for="importFile">Import a backup file</label><input id="importFile" type="file" accept=".json,.txt,application/json">
+      <p id="importMsg" role="status"></p>
+      <p class="muted small">Export includes entry text <em>and</em> photo/audio files bundled in the file. On restore, any referenced file that is missing is reported honestly as “N restored, K missing”. Imports are capped at 50 MB and integrity-checked. Older v1 Base64 exports are also accepted where readable.</p>
+    </div>
+    <div class="card"><h2>Reminders (opt-in, off by default, this device only)</h2>
+      <label><input type="checkbox" id="remCapsule"> On app open, list time capsules whose date has passed</label>
+      <label><input type="checkbox" id="remDaily"> Daily reflection prompt</label>
+      <label for="remDailyTime">Daily prompt time</label><input id="remDailyTime" type="time" value="09:00">
+      <p id="remStatus" class="muted small"></p>
+      <p class="muted small">Nothing is scheduled server-side. A notification, if allowed, contains only the generic line “A LifeVault reflection prompt is waiting” — never entry text, titles, or capsule content. If notifications are unavailable or denied, the prompt appears in-app on open instead.</p>
+    </div>
+    <div class="card"><h2>Appearance</h2>
+      <label for="themeSel">Theme</label><select id="themeSel"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select>
+      <label for="textSizeSel">Text size</label><select id="textSizeSel"><option value="1">Normal (1×)</option><option value="1.15">Large (1.15×)</option><option value="1.3">Largest (1.3×)</option></select>
+    </div>
+    <div class="card"><h2>Data</h2><button id="deleteVaultBtn" class="btn danger">Delete this profile's vault…</button><p class="muted small">This asks for confirmation and deletes only the active profile's entries and media.</p></div>
+    <div class="card"><h2>About this app</h2><p id="aboutText"></p><button class="btn secondary" id="aboutBtn">Read About</button></div>
+  </section>
+</main>
+
+<!-- DETAIL -->
+<div id="detailModal" class="overlay hidden" role="dialog" aria-modal="true" aria-label="Entry detail"><div class="sheet"><div id="detailBody"></div><div class="row"><button id="editBtn" class="btn primary">Edit</button><button id="deleteBtn" class="btn danger">Delete</button><button id="closeDetailBtn" class="btn secondary">Close</button></div></div></div>
+
+<!-- CONFIRM -->
+<div id="confirmModal" class="overlay hidden" role="dialog" aria-modal="true" aria-label="Confirm"><div class="sheet"><h2 id="confirmTitle">Are you sure?</h2><p id="confirmText"></p><div class="row"><button id="confirmYes" class="btn danger">Yes, delete</button><button id="confirmNo" class="btn secondary">Cancel</button></div></div></div>
+
+<!-- PASSWORD DIALOG (export/import) -->
+<div id="pwDialog" class="overlay hidden" role="dialog" aria-modal="true" aria-label="Enter password"><div class="sheet"><h2 id="pwDialogTitle">Enter password</h2><label for="pwInput">Password</label><input id="pwInput" type="password" autocomplete="off"><div id="pwConfirmRow"><label for="pwConfirm">Confirm password</label><input id="pwConfirm" type="password" autocomplete="off"></div><label><input type="checkbox" id="pwShow"> Show password</label><p id="pwError" class="error" role="alert"></p><div class="row"><button id="pwOk" class="btn primary">Continue</button><button id="pwCancel" class="btn secondary">Cancel</button></div><p class="muted small">The password is cleared from the dialog after use and is never stored.</p></div></div>
+<!-- PROFILE-SWITCH PIN DIALOG -->
+<div id="switchPinDialog" class="overlay hidden" role="dialog" aria-modal="true" aria-label="Enter profile PIN"><div class="sheet"><h2>Enter PIN</h2><p>Enter the PIN for profile <strong id="switchPinName"></strong>.</p><label for="switchPinInput">PIN</label><input id="switchPinInput" type="password" inputmode="numeric" autocomplete="off"><div class="row"><button id="switchPinOk" class="btn primary">Switch profile</button><button id="switchPinCancel" class="btn secondary">Cancel</button></div></div></div>
+
+<div id="snackbar" class="snackbar hidden" role="status"><span id="snackText"></span><button id="undoBtn" class="btn small">Undo</button></div>
+
+<nav class="bottomnav" aria-label="Main navigation">
+  <button data-goto="home" aria-label="Home">🏠<span>Home</span></button>
+  <button data-goto="entries" aria-label="Entries">📖<span>Entries</span></button>
+  <button data-goto="capture" class="fab" aria-label="Capture">＋<span>Capture</span></button>
+  <button data-goto="timeline" aria-label="Timeline">🗓️<span>Timeline</span></button>
+  <button data-goto="more" aria-label="More">⋯<span>More</span></button>
+</nav>
+<script src="app.js"></script>
+</body>
+</html>

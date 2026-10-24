@@ -1,0 +1,21 @@
+{
+  "background_color": "#f6f3ff",
+  "description": "LifeVault v2 \u2014 local-first memories, no cloud calls.",
+  "display": "standalone",
+  "icons": [
+    {
+      "sizes": "192x192",
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>\ud83d\udd12</text></svg>",
+      "type": "image/svg+xml"
+    },
+    {
+      "sizes": "512x512",
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>\ud83d\udd12</text></svg>",
+      "type": "image/svg+xml"
+    }
+  ],
+  "name": "LifeVault",
+  "short_name": "LifeVault",
+  "start_url": "index.html",
+  "theme_color": "#5b4a8a"
+}
